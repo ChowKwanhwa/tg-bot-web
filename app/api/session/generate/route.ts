@@ -3,7 +3,7 @@ import { spawn } from 'child_process'
 import path from 'path'
 import { pendingSessions } from '../store'
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<Response> {
   try {
     const { phoneNumber } = await req.json()
 
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     // Run Python script
     const pythonProcess = spawn('python', [scriptPath, phoneNumber])
 
-    return new Promise((resolve) => {
+    return new Promise<Response>((resolve) => {
       let output = ''
       let errorOutput = ''
       let codeRequestSent = false
@@ -49,37 +49,43 @@ export async function POST(req: Request) {
           
           // Store session info
           pendingSessions[phoneNumber] = {
-            scriptProcess: pythonProcess
+            process: pythonProcess,
+            output,
+            errorOutput,
+            resolve
           }
           
-          resolve(NextResponse.json({ 
-            success: true, 
-            waitingForCode: true,
-            message: 'Verification code has been sent to your Telegram account'
+          // Send response indicating code is needed
+          resolve(NextResponse.json({
+            success: true,
+            requireCode: true,
+            message: 'Verification code required'
           }))
         }
       })
 
       pythonProcess.stderr.on('data', (data) => {
         const text = data.toString()
-        console.error('Python stderr:', text)
+        console.log('Python stderr:', text)
         errorOutput += text
       })
 
       pythonProcess.on('close', (code) => {
-        clearTimeout(timeout)
-        console.log('Python process exited with code:', code)
-        console.log('Final output:', output)
-        console.log('Error output:', errorOutput)
-
         if (!codeRequestSent) {
+          clearTimeout(timeout)
+          
           if (code === 0) {
-            resolve(NextResponse.json({ success: true }))
+            resolve(NextResponse.json({
+              success: true,
+              requireCode: false,
+              message: 'Session generated successfully'
+            }))
           } else {
             resolve(NextResponse.json(
               { 
                 success: false, 
-                message: errorOutput || 'Session generation failed' 
+                message: 'Failed to generate session',
+                error: errorOutput
               },
               { status: 500 }
             ))
@@ -89,9 +95,13 @@ export async function POST(req: Request) {
 
       pythonProcess.on('error', (error) => {
         clearTimeout(timeout)
-        console.error('Python process error:', error)
+        console.error('Process error:', error)
         resolve(NextResponse.json(
-          { success: false, message: error.message },
+          { 
+            success: false, 
+            message: 'Failed to start session generation',
+            error: error.message
+          },
           { status: 500 }
         ))
       })
@@ -99,7 +109,11 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('Session generation error:', error)
     return NextResponse.json(
-      { success: false, message: error.message },
+      { 
+        success: false, 
+        message: 'Failed to process request',
+        error: error.message
+      },
       { status: 500 }
     )
   }

@@ -3,7 +3,7 @@ import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 
-export async function GET() {
+export async function GET(): Promise<Response> {
   try {
     // Get root directory and sessions directory
     const rootDir = path.resolve(process.cwd())
@@ -30,7 +30,7 @@ export async function GET() {
     }
 
     // Test sessions using Python script
-    return new Promise((resolve) => {
+    return new Promise<Response>((resolve) => {
       const process = spawn('python', [scriptPath])
       let output = ''
       let error = ''

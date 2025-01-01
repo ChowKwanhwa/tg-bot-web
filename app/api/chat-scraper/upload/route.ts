@@ -3,7 +3,7 @@ import { writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import path from 'path'
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<Response> {
   try {
     const formData = await req.formData()
     const files = formData.getAll('files')
@@ -22,7 +22,7 @@ export async function POST(req: Request) {
     }
 
     console.log(`Processing ${files.length} files...`)
-    const results = []
+    const results: Array<{ name: string; success: boolean; error?: string }> = []
 
     // Process each file
     for (const file of files) {
@@ -47,19 +47,26 @@ export async function POST(req: Request) {
         results.push({ name: file.name, success: true })
       } catch (error) {
         console.error('Error writing file:', file.name, error)
-        results.push({ name: file.name, success: false, error: error.message })
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+        results.push({ name: file.name, success: false, error: errorMessage })
       }
     }
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
-      results,
-      message: `Successfully processed ${results.filter(r => r.success).length} of ${results.length} files`
+      message: `Processed ${files.length} files`,
+      results
     })
-  } catch (error: any) {
+
+  } catch (error) {
     console.error('Upload error:', error)
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
     return NextResponse.json(
-      { success: false, message: error.message },
+      { 
+        success: false, 
+        message: 'Failed to process upload',
+        error: errorMessage
+      },
       { status: 500 }
     )
   }

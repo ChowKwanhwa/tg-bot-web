@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server'
 import { spawn } from 'child_process'
 import path from 'path'
 
-export async function POST() {
+export async function POST(): Promise<Response> {
   try {
     const scriptPath = path.join(process.cwd(), 'scripts', 'test_sessions.py')
 
-    return new Promise((resolve) => {
+    return new Promise<Response>((resolve) => {
       const pythonProcess = spawn('python', [scriptPath], {
         env: {
           ...process.env,
@@ -49,8 +49,7 @@ export async function POST() {
             { 
               success: false, 
               message: 'Test script failed or produced no output',
-              code,
-              output: jsonOutput
+              code: code
             },
             { status: 500 }
           ))
@@ -58,11 +57,11 @@ export async function POST() {
       })
 
       pythonProcess.on('error', (error) => {
-        console.error('Failed to run script:', error)
+        console.error('Process error:', error)
         resolve(NextResponse.json(
           { 
             success: false, 
-            message: 'Failed to run test script',
+            message: 'Failed to start test script',
             error: error.message
           },
           { status: 500 }
@@ -72,7 +71,11 @@ export async function POST() {
   } catch (error: any) {
     console.error('Test error:', error)
     return NextResponse.json(
-      { success: false, message: error.message },
+      { 
+        success: false, 
+        message: 'Test failed',
+        error: error.message
+      },
       { status: 500 }
     )
   }

@@ -3,8 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import { pendingSessions } from '../store'
 
-// 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<Response> {
   try {
     const { phoneNumber, verificationCode, password2FA } = await req.json()
 
@@ -24,15 +23,15 @@ export async function POST(req: Request) {
     }
 
     console.log('Writing verification code to Python process...')
-    session.scriptProcess.stdin.write(verificationCode + '\n')
+    session.process.stdin.write(verificationCode + '\n')
 
-    return new Promise((resolve) => {
-      let output = ''
-      let errorOutput = ''
+    return new Promise<Response>((resolve) => {
+      let output = session.output || ''
+      let errorOutput = session.errorOutput || ''
       let sessionCreated = false
       let needs2FA = false
       
-      session.scriptProcess.stdout.on('data', (data) => {
+      session.process.stdout.on('data', (data: Buffer) => {
         const text = data.toString()
         console.log('Python stdout:', text)
         output += text
@@ -45,77 +44,85 @@ export async function POST(req: Request) {
           needs2FA = true
           if (password2FA) {
             console.log('Writing 2FA password to Python process...')
-            session.scriptProcess.stdin.write(password2FA + '\n')
+            session.process.stdin.write(password2FA + '\n')
           } else {
             resolve(NextResponse.json({ 
               success: false, 
               needs2FA: true,
-              message: 'Two-factor authentication is required'
+              message: '2FA password required'
             }))
+            return
           }
         }
       })
 
-      session.scriptProcess.stderr.on('data', (data) => {
+      session.process.stderr.on('data', (data: Buffer) => {
         const text = data.toString()
-        console.error('Python stderr:', text)
+        console.log('Python stderr:', text)
         errorOutput += text
       })
 
-      session.scriptProcess.on('close', async (code) => {
-        console.log('Python process exited with code:', code)
-        console.log('Final output:', output)
-        console.log('Error output:', errorOutput)
+      session.process.on('close', (code: number | null) => {
+        // Clean up session
+        delete pendingSessions[phoneNumber]
 
         if (code === 0 && sessionCreated) {
-          try {
-            const sessionFilePath = path.join(process.cwd(), 'sessions', `${phoneNumber}.session`)
-            console.log('Reading session file from:', sessionFilePath)
+          // Get session file path
+          const sessionDir = path.join(process.cwd(), 'sessions')
+          const sessionFile = path.join(sessionDir, `${phoneNumber}.session`)
 
-            // Wait for file write to complete
-            await new Promise(resolve => setTimeout(resolve, 1000))
-
-            // Read the session file as binary data
-            const sessionContent = await fs.promises.readFile(sessionFilePath)
-            console.log('Session file size:', sessionContent.length, 'bytes')
-
-            // Convert binary data to base64 string for safe transmission
-            const sessionBase64 = sessionContent.toString('base64')
-
-            // Clean up session
-            delete pendingSessions[phoneNumber]
-
-            // Delete the session file from disk after reading
-            try {
-              await fs.promises.unlink(sessionFilePath)
-              console.log('Session file deleted from disk')
-            } catch (error) {
-              console.error('Error deleting session file:', error)
-            }
-
+          if (fs.existsSync(sessionFile)) {
             resolve(NextResponse.json({
               success: true,
-              sessionFile: sessionBase64
+              message: 'Session created successfully'
             }))
-          } catch (error: any) {
-            console.error('Error reading session file:', error)
+          } else {
             resolve(NextResponse.json(
-              { success: false, message: `Failed to read session file: ${error.message}` },
+              { 
+                success: false, 
+                message: 'Session file not found after creation',
+                error: errorOutput
+              },
               { status: 500 }
             ))
           }
         } else {
           resolve(NextResponse.json(
-            { success: false, message: `Verification failed: ${errorOutput || 'Unknown error'}` },
+            { 
+              success: false, 
+              message: 'Failed to create session',
+              error: errorOutput
+            },
             { status: 500 }
           ))
         }
       })
+
+      session.process.on('error', (error: Error) => {
+        // Clean up session
+        delete pendingSessions[phoneNumber]
+
+        console.error('Process error:', error)
+        resolve(NextResponse.json(
+          { 
+            success: false, 
+            message: 'Session verification process failed',
+            error: error.message
+          },
+          { status: 500 }
+        ))
+      })
     })
-  } catch (error: any) {
+
+  } catch (error) {
     console.error('Verification error:', error)
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
     return NextResponse.json(
-      { success: false, message: error.message },
+      { 
+        success: false, 
+        message: 'Failed to process verification',
+        error: errorMessage
+      },
       { status: 500 }
     )
   }
