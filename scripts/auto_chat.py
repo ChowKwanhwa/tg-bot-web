@@ -149,139 +149,177 @@ async def get_recent_messages(client, target_group, limit=5, use_topic=False, to
         print(f"Failed to get messages: {str(e)}")
         return []
 
-async def get_sticker_from_message(client, message_data):
+async def get_sticker_from_message(client, message_data, media_dir):
     """Get sticker object from message"""
     try:
         media_file = message_data.get('media_file')
         if not media_file or pd.isna(media_file):
             return None
             
-        # Load sticker info from JSON file
-        sticker_info_path = os.path.join(os.path.dirname(media_file), media_file)
-        with open(sticker_info_path, 'r') as f:
-            sticker_info = json.load(f)
+        # 处理 media_file 路径，确保正确的格式
+        if media_file.startswith('media/'):
+            media_file = media_file[6:]  # 去掉 'media/' 前缀
             
-        # Create InputDocument for the sticker
-        return types.InputDocument(
+        # 构建 JSON 文件路径 (将 .webp 替换为 .json)
+        base_name = os.path.splitext(media_file)[0]
+        json_path = os.path.join(media_dir, base_name + '.json')
+        
+        print(f"\nDebug sticker info:")
+        print(f"Looking for sticker info at: {json_path}")
+        
+        if not os.path.exists(json_path):
+            print(f"Sticker info not found: {json_path}")
+            return None
+            
+        # 加载 sticker 信息
+        with open(json_path, 'r') as f:
+            sticker_info = json.load(f)
+            print(f"Loaded sticker info: {sticker_info}")
+            
+        # 创建 InputDocument
+        input_doc = types.InputDocument(
             id=int(sticker_info['id']),
             access_hash=int(sticker_info['access_hash']),
             file_reference=bytes.fromhex(sticker_info['file_reference'])
         )
+        print(f"Created InputDocument with id: {input_doc.id}")
+        return input_doc
+        
     except Exception as e:
         print(f"Error getting sticker: {str(e)}")
+        traceback.print_exc()
     return None
 
-async def process_message(client, message_data, target_group, recent_messages, use_topic, topic_id, media_dir):
+async def process_message(client, message_data, target_group, recent_messages, topic_id=None, media_dir=None):
     """Process a single message"""
     try:
-        message_type = message_data['type']
+        channel = await client.get_entity(target_group)
         
-        # 准备发送参数
-        send_kwargs = {}
-        if use_topic:
-            send_kwargs['reply_to'] = topic_id
-        
-        # 如果有回复消息，添加回复参数
-        if 'reply_to' in message_data and not pd.isna(message_data['reply_to']):
-            reply_id = int(message_data['reply_to'])
-            if reply_id in recent_messages:
-                send_kwargs['reply_to'] = recent_messages[reply_id]
-        
-        if message_type == 'text':
-            content = message_data['content']
-            if pd.isna(content):
-                return None
+        # 基础发送参数
+        kwargs = {}
+        if topic_id:  # 如果指定了topic_id，所有消息都需要发送到对应的topic
+            kwargs['reply_to'] = topic_id
             
-            sent_message = await client.send_message(target_group, content, **send_kwargs)
-            return sent_message
+        random_value = random.random()
+        
+        # 25% 概率回复消息
+        if random_value < 0.25 and recent_messages:
+            target_message = recent_messages[-1]  # 回复最新消息
+            kwargs['reply_to'] = target_message.id
+        
+        # 15% 概率添加表情回应
+        elif random_value < 0.40 and recent_messages:  # 0.25 + 0.15 = 0.40
+            target_message = recent_messages[-1]
+            reaction = random.choice(REACTION_EMOJIS)
+            try:
+                await client(SendReactionRequest(
+                    peer=channel,
+                    msg_id=target_message.id,
+                    reaction=[ReactionEmoji(emoticon=reaction)]
+                ))
+                me = await client.get_me()
+                print(f"[{me.first_name}] Reacted with {reaction} to message {target_message.id}")
+            except Exception as e:
+                print(f"Failed to add reaction: {str(e)}")
+            return
             
-        elif message_type == 'sticker':
-            # 直接使用贴纸信息发送
-            sticker = await get_sticker_from_message(client, message_data)
-            if sticker:
-                sent_message = await client.send_file(
-                    target_group,
-                    sticker,
-                    **send_kwargs
-                )
-                print(f"Sent sticker")
-                return sent_message
-            else:
-                print(f"Failed to get sticker, skipping")
-                return None
+        # 发送消息（包括普通发送和回复）
+        if message_data['type'] in ['photo', 'file', 'sticker']:
+            print(f"\nDebug media paths:")
+            print(f"media_dir: {media_dir}")
+            print(f"media_file from message_data: {message_data['media_file']}")
+            
+            # 检查media_file是否为空或NaN
+            if pd.isna(message_data['media_file']):
+                print("Warning: media_file is NaN")
+                return
                 
-        elif message_type in ['photo', 'file', 'video']:
-            media_file = message_data.get('media_file')
-            if media_file and not pd.isna(media_file):
-                # 从media_file中提取文件名
-                media_filename = os.path.basename(media_file)
-                # 构建完整的媒体文件路径
-                media_path = os.path.join(media_dir, media_filename)
+            # 获取media_file，确保不重复media路径
+            media_file = message_data['media_file']
+            if media_file.startswith('media/') or media_file.startswith('media\\'):
+                # 移除开头的media/或media\
+                media_file = os.path.join(*os.path.normpath(media_file).split(os.path.sep)[1:])
                 
-                print(f"Trying to send media file: {media_path}")
+            # 构建完整路径
+            media_path = os.path.normpath(os.path.join(media_dir, media_file))
+            print(f"Constructed media_path: {media_path}")
+            print(f"File exists: {os.path.exists(media_path)}")
+            
+            if os.path.exists(media_path):
+                # 检查文件扩展名
+                file_ext = os.path.splitext(media_path)[1].lower()
+                print(f"File extension: {file_ext}")
                 
-                if os.path.exists(media_path):
+                if message_data['type'] == 'sticker':
+                    # 尝试使用 sticker ID 发送
+                    sticker = await get_sticker_from_message(client, message_data, media_dir)
+                    if sticker:
+                        try:
+                            # 创建 InputMediaDocument
+                            media = types.InputMediaDocument(
+                                id=sticker,
+                                ttl_seconds=None,
+                                spoiler=False
+                            )
+                            
+                            # 使用 send_media 发送 sticker
+                            await client.send_message(
+                                channel,
+                                message="",  # 空消息文本
+                                file=media,  # 使用 media 参数
+                                **kwargs
+                            )
+                            print(f"Sent sticker using ID: {sticker.id}")
+                            return
+                        except Exception as e:
+                            print(f"Failed to send sticker using ID, falling back to file: {str(e)}")
+                            traceback.print_exc()
+                    
+                    # 如果使用 ID 发送失败，尝试直接发送文件
                     try:
-                        file_ext = os.path.splitext(media_path)[1].lower()
-                        
-                        if file_ext == '.webm':
-                            # Send as video message with proper attributes
-                            await client.send_file(
-                                target_group,
-                                media_path,
-                                attributes=[
-                                    DocumentAttributeVideo(
-                                        duration=0,
-                                        w=200,  # width
-                                        h=200,  # height
-                                        round_message=True,
-                                        supports_streaming=True
-                                    )
-                                ],
-                                **send_kwargs
-                            )
-                            print(f"Sent video message: {media_path}")
-                            return None
-                        elif file_ext in ['.jpg', '.jpeg', '.png']:
-                            # Send as photo
-                            sent_message = await client.send_file(
-                                target_group,
-                                media_path,
-                                **send_kwargs
-                            )
-                            print(f"Sent photo: {media_path}")
-                            return sent_message
-                        elif file_ext in ['.mp4', '.gif.mp4']:
-                            # Send as video
-                            sent_message = await client.send_file(
-                                target_group,
-                                media_path,
-                                **send_kwargs
-                            )
-                            print(f"Sent video: {media_path}")
-                            return sent_message
-                        else:
-                            # Other files normal send
-                            sent_message = await client.send_file(
-                                target_group,
-                                media_path,
-                                **send_kwargs
-                            )
-                            print(f"Sent media: {media_path}")
-                            return sent_message
+                        await client.send_file(
+                            channel,
+                            media_path,
+                            force_document=True,  # 强制作为文档发送
+                            **kwargs
+                        )
+                        print(f"Sent sticker as file: {media_path}")
+                        return
                     except Exception as e:
-                        print(f"Failed to send media: {str(e)}")
-                        print(f"File exists: {os.path.exists(media_path)}")
-                        print(f"File size: {os.path.getsize(media_path) if os.path.exists(media_path) else 'N/A'}")
-                else:
-                    print(f"Media file not found: {media_path}")
-                    print(f"Current directory: {os.getcwd()}")
-                    print(f"Media directory contents: {os.listdir(media_dir)}")
+                        print(f"Failed to send sticker as file: {str(e)}")
+                        traceback.print_exc()
+                        return
+                        
+                elif message_data['type'] == 'photo':
+                    await client.send_file(
+                        channel,
+                        media_path,
+                        **kwargs
+                    )
+                else:  # file
+                    await client.send_file(
+                        channel,
+                        media_path,
+                        **kwargs
+                    )
+            else:
+                print(f"Media file not found: {media_path}")
+                # 打印当前工作目录以便调试
+                print(f"Current working directory: {os.getcwd()}")
+                return
+                
+        elif message_data['type'] == 'text':
+            await client.send_message(
+                channel,
+                message_data['content'],
+                **kwargs
+            )
             
-        return None
+        me = await client.get_me()
+        print(f"[{me.first_name}] Sent message: {message_data['content'][:50]}...")
+        
     except Exception as e:
-        print(f"Error processing message: {str(e)}")
-        return None
+        print(f"Failed to process message: {str(e)}")
 
 async def run_chat_loop(clients, df, args, media_dir):
     """Run the main chat loop"""
@@ -291,12 +329,14 @@ async def run_chat_loop(clients, df, args, media_dir):
         topic_id = args.topic_id if use_topic else None
         min_interval = args.min_interval
         max_interval = args.max_interval
+        
+        print(f"\nDebug media_dir in run_chat_loop:")
+        print(f"media_dir: {media_dir}")
+        print(f"media_dir exists: {os.path.exists(media_dir)}")
+        print(f"media_dir is absolute: {os.path.isabs(media_dir)}")
 
         # Create client cycle
         client_cycle = itertools.cycle(clients)
-        
-        # Dictionary to store recent message IDs
-        recent_messages = {}
         
         # Create message iterator
         message_index = 0
@@ -306,7 +346,7 @@ async def run_chat_loop(clients, df, args, media_dir):
         while True:
             # Check if we've processed all messages
             if message_index >= total_messages:
-                print("All messages have been processed")
+                print("所有消息处理完成")
                 break
                 
             # Sleep for random interval
@@ -317,27 +357,29 @@ async def run_chat_loop(clients, df, args, media_dir):
             current_client = next(client_cycle)
             current_message = df.iloc[message_index]
             
-            # Process the message
-            sent_message = await process_message(
+            # Get recent messages for context
+            recent_messages = await get_recent_messages(
+                current_client,
+                target_group,
+                use_topic=use_topic,
+                topic_id=topic_id
+            )
+            
+            # Process message
+            await process_message(
                 current_client,
                 current_message,
                 target_group,
                 recent_messages,
-                use_topic,
-                topic_id,
-                media_dir
+                topic_id=topic_id,
+                media_dir=media_dir  # 确保传递 media_dir
             )
             
-            # Store sent message ID if successful
-            if sent_message:
-                recent_messages[current_message['id']] = sent_message.id
-            
-            # Increment message counter
             message_index += 1
-            print(f"Processed message {message_index}/{total_messages}")
             
     except Exception as e:
-        print(f"Error in chat loop: {str(e)}")
+        print(f"聊天循环出错: {str(e)}")
+        raise e
 
 async def main():
     try:

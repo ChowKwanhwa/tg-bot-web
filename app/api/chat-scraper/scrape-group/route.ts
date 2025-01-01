@@ -34,6 +34,8 @@ export async function POST(req: Request) {
     // Create readable stream
     const stream = new ReadableStream({
       async start(controller) {
+        let isControllerClosed = false;
+        
         // Remove @ prefix if exists and clean group name
         const cleanGroupName = group.replace(/^@/, '')
 
@@ -48,7 +50,9 @@ export async function POST(req: Request) {
           try {
             const lines = data.toString().split('\n').filter(Boolean)
             for (const line of lines) {
-              controller.enqueue(`data: ${line}\n`)
+              if (!isControllerClosed) {
+                controller.enqueue(`data: ${line}\n`)
+              }
             }
           } catch (e) {
             console.error('Error processing stdout:', e)
@@ -63,11 +67,14 @@ export async function POST(req: Request) {
 
         // Handle process exit
         process.on('close', (code) => {
-          if (code !== 0) {
-            console.error('Python script exited with code:', code)
-            controller.enqueue(`data: {"type":"error","message":"Script exited with code ${code}"}\n`)
+          if (!isControllerClosed) {
+            if (code !== 0) {
+              console.error('Python script exited with code:', code)
+              controller.enqueue(`data: {"type":"error","message":"Script exited with code ${code}"}\n`)
+            }
+            isControllerClosed = true;
+            controller.close()
           }
-          controller.close()
         })
       }
     })

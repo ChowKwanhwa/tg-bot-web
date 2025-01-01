@@ -14,7 +14,6 @@ import argparse
 from config import (
     API_ID,
     API_HASH,
-    SESSIONS_DIR,
     MEDIA_DIR,
     PROXY_CONFIGS
 )
@@ -34,9 +33,11 @@ logging.getLogger('telethon').setLevel(logging.WARNING)
 
 # Configure paths
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scraped_data')
+SESSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'sessions')
 
 # Create necessary directories
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 def sanitize_filename(filename):
     """Clean filename, remove illegal characters"""
@@ -49,32 +50,74 @@ async def download_media(message, group_folder):
             media_folder = os.path.join(group_folder, 'media')
             os.makedirs(media_folder, exist_ok=True)
             
-            # Special handling for stickers
-            if message.sticker:
-                # Store sticker information
-                sticker_info = {
-                    'id': str(message.file.id),
-                    'access_hash': str(message.file.access_hash),
-                    'file_reference': message.file.file_reference.hex()
-                }
-                sticker_info_file = os.path.join(media_folder, f"sticker_{message.id}.json")
-                with open(sticker_info_file, 'w') as f:
-                    json.dump(sticker_info, f)
-                return sticker_info_file
-            
-            # Get filename
-            if hasattr(message.media, 'document'):
-                file_name = message.file.name if message.file.name else f"{message.id}_{message.file.ext}"
+            # Get media type and filename
+            if hasattr(message.media, 'photo'):
+                # Handle photos
+                file_name = f"photo_{message.id}.jpg"
+                media_type = "photo"
+            elif hasattr(message.media, 'document'):
+                # Handle documents
+                if message.sticker:
+                    file_name = f"sticker_{message.id}.webp"
+                    media_type = "sticker"
+                    # 保存sticker信息
+                    document = message.media.document
+                    sticker_info = {
+                        'id': document.id,
+                        'access_hash': document.access_hash,
+                        'file_reference': document.file_reference.hex()
+                    }
+                    # 保存sticker信息到json文件
+                    json_file_name = f"sticker_{message.id}.json"
+                    json_file_path = os.path.join(media_folder, json_file_name)
+                    with open(json_file_path, 'w', encoding='utf-8') as f:
+                        json.dump(sticker_info, f, indent=2)
+                elif message.video:
+                    file_name = f"video_{message.id}.mp4"
+                    media_type = "video"
+                elif message.voice:
+                    file_name = f"voice_{message.id}.ogg"
+                    media_type = "voice"
+                elif message.audio:
+                    extension = message.audio.mime_type.split('/')[-1]
+                    file_name = f"audio_{message.id}.{extension}"
+                    media_type = "audio"
+                else:
+                    # Generic document
+                    original_name = getattr(message.document, 'file_name', '')
+                    extension = original_name.split('.')[-1] if original_name and '.' in original_name else 'bin'
+                    file_name = f"doc_{message.id}.{extension}"
+                    media_type = "document"
             else:
-                file_name = f"{message.id}.{message.file.ext}"
-            
+                return None
+                
             # Clean filename
             file_name = sanitize_filename(file_name)
             file_path = os.path.join(media_folder, file_name)
             
-            # Download file
-            await message.download_media(file_path)
-            return file_path
+            try:
+                # Download using the message object directly
+                await message.download_media(file_path)
+                # 返回相对于group_folder的路径，使用media/作为前缀
+                return f"media/{file_name}"
+            except Exception as e:
+                # If direct download fails, try alternative method
+                try:
+                    if hasattr(message.media, 'photo'):
+                        # For photos, get the largest size
+                        photo = message.photo
+                        if photo:
+                            await message.client.download_media(photo, file_path)
+                            return f"media/{file_name}"
+                    elif hasattr(message.media, 'document'):
+                        # For documents, use document attribute
+                        document = message.media.document
+                        if document:
+                            await message.client.download_media(document, file_path)
+                            return f"media/{file_name}"
+                except Exception as inner_e:
+                    logging.error(f"Alternative download method failed: {str(inner_e)}")
+                    
     except Exception as e:
         logging.error(f"Failed to download media: {str(e)}")
     return None
@@ -122,7 +165,7 @@ async def scrape_group(client, group_username, message_limit=1000):
             
             async for message in client.iter_messages(group_entity, limit=message_limit):
                 # Skip messages from bots
-                if message.sender and hasattr(message.sender, 'bot') and message.sender.bot:
+                if hasattr(message.sender, 'bot') and message.sender.bot:
                     continue
                     
                 current_message += 1
@@ -146,13 +189,25 @@ async def scrape_group(client, group_username, message_limit=1000):
                         media_path = os.path.relpath(media_path, group_folder)
                 
                 # Write to CSV
-                writer.writerow([
-                    message.id,
-                    message.date.isoformat(),
-                    msg_type,
-                    content,
-                    media_path
-                ])
+                message_data = {
+                    'id': message.id,
+                    'date': message.date.isoformat(),
+                    'type': msg_type,
+                    'content': content,
+                    'media_file': media_path
+                }
+                
+                if message.media:
+                    if hasattr(message.media, 'document'):
+                        if message.sticker:
+                            message_data['media_file'] = f'media/sticker_{message.id}.webp'
+                        else:
+                            original_filename = getattr(message.document, 'file_name', '')
+                            message_data['media_file'] = f'media/file_{message.id}_{original_filename}'
+                    elif hasattr(message.media, 'photo'):
+                        message_data['media_file'] = f'media/photo_{message.id}.jpg'
+                
+                writer.writerow(message_data.values())
         
         # Return results
         result = {
@@ -183,8 +238,19 @@ async def connect_with_session(session_file):
                     session_path,
                     API_ID,
                     API_HASH,
-                    proxy=proxy_config
+                    proxy={
+                        'proxy_type': proxy_config.get('proxy_type', 'socks5'),
+                        'addr': proxy_config['addr'],
+                        'port': proxy_config['port'],
+                        'username': proxy_config.get('username'),
+                        'password': proxy_config.get('password')
+                    }
                 )
+                
+                print(json.dumps({
+                    "type": "debug",
+                    "message": f"Attempting to connect with proxy: {proxy_config['addr']}:{proxy_config['port']}"
+                }))
                 
                 await client.connect()
                 if await client.is_user_authorized():
@@ -193,8 +259,17 @@ async def connect_with_session(session_file):
                         "message": f"Successfully connected to Telegram (using proxy: {proxy_config['addr']}:{proxy_config['port']})"
                     }))
                     return client
+                else:
+                    print(json.dumps({
+                        "type": "error",
+                        "message": "Client not authorized"
+                    }))
                     
             except Exception as e:
+                print(json.dumps({
+                    "type": "error",
+                    "message": f"Connection error with proxy {proxy_config['addr']}: {str(e)}"
+                }))
                 continue
                 
         return None
