@@ -1,77 +1,75 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 
-export default function LoginPage() {
-  const router = useRouter()
+function LoginForm() {
   const [loginType, setLoginType] = useState<'admin' | 'user'>('user')
-  const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const searchParams = useSearchParams()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    setIsLoading(true)
+    setLoading(true)
 
     try {
-      console.log('Attempting login...')
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(
-          loginType === 'admin'
-            ? { username, password }
-            : { email, password }
-        ),
-        credentials: 'include',
+        body: JSON.stringify({
+          email: loginType === 'admin' ? username : email,
+          password,
+        })
       })
 
       const data = await res.json()
 
       if (!res.ok) {
-        setError(data.message || '登录失败，请重试')
-        setIsLoading(false)
-        return
+        throw new Error(data.message || 'Login failed')
       }
 
-      console.log('Login successful, redirecting...')
-      router.push(data.redirectTo)
+      // 登录成功，重定向到之前的页面或默认页面
+      const from = searchParams.get('from')
+      if (from) {
+        window.location.replace(from)
+      } else {
+        window.location.replace(loginType === 'admin' ? '/admin' : '/')
+      }
 
-    } catch (err: any) {
-      console.error('Login error:', err)
-      setError('登录时发生错误，请重试')
-      setIsLoading(false)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Login failed')
+    } finally {
+      setLoading(false)
     }
   }
 
-  const handleTypeChange = (type: 'admin' | 'user') => {
-    setLoginType(type)
-    setError('') // 切换登录类型时清除错误信息
-    setEmail('')
-    setUsername('')
-    setPassword('')
-  }
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-lg shadow">
         <div>
           <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-            登录到 TG Bot
+            登录
           </h2>
           <div className="mt-4 flex justify-center space-x-4">
             <button
               type="button"
-              onClick={() => handleTypeChange('user')}
+              onClick={() => {
+                setLoginType('user')
+                setError('')
+                setEmail('')
+                setUsername('')
+                setPassword('')
+              }}
               className={`px-4 py-2 text-sm font-medium rounded-md ${
                 loginType === 'user'
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-indigo-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               } transition-colors duration-200`}
             >
@@ -79,10 +77,16 @@ export default function LoginPage() {
             </button>
             <button
               type="button"
-              onClick={() => handleTypeChange('admin')}
+              onClick={() => {
+                setLoginType('admin')
+                setError('')
+                setEmail('')
+                setUsername('')
+                setPassword('')
+              }}
               className={`px-4 py-2 text-sm font-medium rounded-md ${
                 loginType === 'admin'
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-indigo-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               } transition-colors duration-200`}
             >
@@ -102,8 +106,8 @@ export default function LoginPage() {
                   name="username"
                   type="text"
                   required
-                  className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
-                  placeholder="管理员用户名"
+                  className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                  placeholder="用户名"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                 />
@@ -118,7 +122,7 @@ export default function LoginPage() {
                   name="email"
                   type="email"
                   required
-                  className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
+                  className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
                   placeholder="邮箱"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -134,7 +138,7 @@ export default function LoginPage() {
                 name="password"
                 type="password"
                 required
-                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
                 placeholder="密码"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -143,7 +147,7 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <div className="text-red-500 text-sm text-center bg-red-50 p-2 rounded">
+            <div className="text-red-500 text-sm text-center">
               {error}
             </div>
           )}
@@ -151,18 +155,24 @@ export default function LoginPage() {
           <div>
             <button
               type="submit"
-              disabled={isLoading}
-              className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
-                isLoading
-                  ? 'bg-blue-400 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700'
-              } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors duration-200`}
+              disabled={loading}
+              className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${
+                loading ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
             >
-              {isLoading ? '登录中...' : '登录'}
+              {loading ? '登录中...' : '登录'}
             </button>
           </div>
         </form>
       </div>
     </div>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoginForm />
+    </Suspense>
   )
 }

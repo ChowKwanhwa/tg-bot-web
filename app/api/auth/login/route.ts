@@ -1,146 +1,108 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import * as bcrypt from 'bcryptjs'
 import * as jose from 'jose'
-import { cookies } from 'next/headers'
 import { PrismaClient } from '@prisma/client'
-import bcrypt from 'bcryptjs'
 
-// Initialize Prisma Client
 const prisma = new PrismaClient()
-
 const JWT_SECRET = new TextEncoder().encode('your-jwt-secret-key')
+
+// 管理员凭据
 const ADMIN_USERNAME = 'fchow'
 const ADMIN_PASSWORD = 'Tgbotweb.!2022'
 
-// Initialize local cache
-declare global {
-  var _localUserCache: Map<string, { email: string; password: string }> | undefined
-}
-
-if (!global._localUserCache) {
-  global._localUserCache = new Map()
-}
-
-// Add test user to local cache
-async function addTestUser() {
-  const testEmail = 'test@example.com'
-  const testPassword = 'password123'
-  const hashedPassword = await bcrypt.hash(testPassword, 10)
-  global._localUserCache?.set(testEmail, {
-    email: testEmail,
-    password: hashedPassword
-  })
-  console.log('Added test user to local cache')
-}
-
-// Add test user
-addTestUser()
-
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { username, password, email } = body
+    const { email, password } = await request.json()
 
-    // Admin login
-    if (username) {
-      if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
-        return NextResponse.json(
-          { message: '用户名或密码错误' },
-          { status: 401 }
-        )
-      }
-    }
-    // Regular user login
-    else if (email) {
-      try {
-        // First check local cache
-        const cachedUser = global._localUserCache?.get(email)
-        
-        if (cachedUser) {
-          console.log('User found in local cache')
-          const isValidPassword = await bcrypt.compare(password, cachedUser.password)
-          if (!isValidPassword) {
-            return NextResponse.json(
-              { message: '邮箱或密码错误' },
-              { status: 401 }
-            )
-          }
-        } else {
-          // If not in cache, try to get from database
-          try {
-            console.log('Querying database for user...')
-            const user = await prisma.user.findUnique({
-              where: { email }
-            })
-            
-            if (!user) {
-              return NextResponse.json(
-                { message: '邮箱或密码错误' },
-                { status: 401 }
-              )
-            }
+    // 管理员登录
+    if (email === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+      const token = await new jose.SignJWT({
+        email: ADMIN_USERNAME,
+        isAdmin: true,
+        expiresAt: null
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('24h')
+        .sign(JWT_SECRET)
 
-            const isValidPassword = await bcrypt.compare(password, user.password)
-            if (!isValidPassword) {
-              return NextResponse.json(
-                { message: '邮箱或密码错误' },
-                { status: 401 }
-              )
-            }
-
-            // Add to local cache
-            global._localUserCache?.set(email, {
-              email: user.email,
-              password: user.password
-            })
-          } catch (dbError) {
-            console.error('Database error:', dbError)
-            return NextResponse.json(
-              { message: '服务器错误，请稍后重试' },
-              { status: 500 }
-            )
-          }
+      const response = NextResponse.json({ 
+        success: true,
+        user: {
+          email: ADMIN_USERNAME,
+          isAdmin: true,
+          expiresAt: null
         }
-      } catch (error) {
-        console.error('Login verification error:', error)
-        return NextResponse.json(
-          { message: '验证失败，请重试' },
-          { status: 500 }
-        )
-      }
+      })
+
+      response.cookies.set({
+        name: 'auth-token',
+        value: token,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/'
+      })
+
+      return response
     }
-    else {
+
+    // 普通用户登录
+    const user = await prisma.user.findUnique({
+      where: { email }
+    })
+
+    if (!user) {
       return NextResponse.json(
-        { message: '无效的登录请求' },
-        { status: 400 }
+        { success: false, message: 'Invalid credentials' },
+        { status: 401 }
       )
     }
 
-    // Create JWT token
-    const token = await new jose.SignJWT({ 
-      username: username || email,
-      isAdmin: !!username
+    const validPassword = await bcrypt.compare(password, user.password)
+    if (!validPassword) {
+      return NextResponse.json(
+        { success: false, message: 'Invalid credentials' },
+        { status: 401 }
+      )
+    }
+
+    if (user.expiresAt && new Date(user.expiresAt) < new Date()) {
+      await prisma.user.delete({
+        where: { email }
+      })
+      return NextResponse.json(
+        { success: false, message: 'Account expired' },
+        { status: 401 }
+      )
+    }
+
+    const token = await new jose.SignJWT({
+      email: user.email,
+      isAdmin: user.isAdmin,
+      expiresAt: user.expiresAt?.toISOString()
     })
       .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
       .setExpirationTime('24h')
       .sign(JWT_SECRET)
 
-    // Create response
-    const response = NextResponse.json(
-      { 
-        success: true, 
-        redirectTo: username ? '/admin' : '/auto-chat' 
-      },
-      { status: 200 }
-    )
+    const response = NextResponse.json({ 
+      success: true,
+      user: {
+        email: user.email,
+        isAdmin: user.isAdmin,
+        expiresAt: user.expiresAt
+      }
+    })
 
-    // Set cookie
     response.cookies.set({
       name: 'auth-token',
       value: token,
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 60 * 60 * 24, // 24 hours
+      path: '/'
     })
 
     return response
@@ -148,8 +110,10 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error('Login error:', error)
     return NextResponse.json(
-      { message: '登录失败，请重试' },
+      { success: false, message: 'Login failed' },
       { status: 500 }
     )
+  } finally {
+    await prisma.$disconnect()
   }
 }

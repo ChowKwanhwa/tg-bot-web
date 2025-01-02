@@ -2,9 +2,35 @@ import { NextResponse } from 'next/server'
 import path from 'path'
 import fs from 'fs'
 import { pendingSessions } from '../store'
+import { cookies } from 'next/headers'
+import * as jose from 'jose'
+
+const JWT_SECRET = new TextEncoder().encode('your-jwt-secret-key')
 
 export async function POST(req: Request): Promise<Response> {
   try {
+    // 验证用户身份
+    const cookieStore = await cookies()
+    const token = await cookieStore.get('auth-token')
+    
+    if (!token) {
+      return NextResponse.json(
+        { success: false, message: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // 解析JWT获取用户邮箱
+    const { payload } = await jose.jwtVerify(token.value, JWT_SECRET)
+    const userEmail = payload.username as string
+
+    if (!userEmail) {
+      return NextResponse.json(
+        { success: false, message: 'Invalid token' },
+        { status: 401 }
+      )
+    }
+
     const { phoneNumber, verificationCode, password2FA } = await req.json()
 
     if (!phoneNumber || !verificationCode) {
@@ -19,6 +45,14 @@ export async function POST(req: Request): Promise<Response> {
       return NextResponse.json(
         { success: false, message: 'Session not found' },
         { status: 404 }
+      )
+    }
+
+    // 验证用户身份匹配
+    if (session.userEmail !== userEmail) {
+      return NextResponse.json(
+        { success: false, message: 'Session ownership mismatch' },
+        { status: 403 }
       )
     }
 
@@ -68,7 +102,7 @@ export async function POST(req: Request): Promise<Response> {
 
         if (code === 0 && sessionCreated) {
           // Get session file path
-          const sessionDir = path.join(process.cwd(), 'sessions')
+          const sessionDir = path.join(process.cwd(), 'sessions', userEmail)
           const sessionFile = path.join(sessionDir, `${phoneNumber}.session`)
 
           if (fs.existsSync(sessionFile)) {

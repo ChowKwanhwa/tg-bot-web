@@ -119,22 +119,23 @@ export default function AutoChat() {
   const handleTest = async () => {
     setTesting(true)
     setError(null)
-    setResults([])
 
     try {
       const response = await fetch('/api/chat-scraper/test-sessions', {
         method: 'POST'
       })
 
-      const data = await response.json()
-      if (!data.success) {
-        setError(data.message || 'Failed to test sessions')
-        return
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.message || 'Failed to test sessions')
       }
 
-      setResults(data.results)
+      const data = await response.json()
+      setResults(data.results || [])
     } catch (err: any) {
+      console.error('Test sessions error:', err)
       setError(err.message || 'Failed to test sessions')
+      setResults([])
     } finally {
       setTesting(false)
     }
@@ -152,7 +153,7 @@ export default function AutoChat() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ filename }),
-      })
+      });
 
       if (!response.ok) {
         const data = await response.json()
@@ -167,10 +168,10 @@ export default function AutoChat() {
   }
 
   const handleStartAutoChat = async () => {
-    setIsRunning(true);
-    setStatus([]);
-
     try {
+      setIsRunning(true);
+      setStatus([]);
+
       const response = await fetch('/api/auto-chat/start', {
         method: 'POST',
         headers: {
@@ -179,27 +180,43 @@ export default function AutoChat() {
         body: JSON.stringify({
           targetGroup,
           isTopic,
-          topicId: isTopic ? parseInt(topicId) : undefined,
+          topicId: isTopic ? topicId : undefined,
+          messageSource: selectedSource,
           messageInterval,
-          messageSource: selectedSource
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json();
+        console.error('Auto chat error:', errorData);
+        
+        // 显示详细的错误信息
+        const errorMessages = [
+          `❌ Error: ${errorData.message}`,
+          ...(errorData.error ? [`Details: ${errorData.error}`] : []),
+          ...(errorData.stdout ? [`Output: ${errorData.stdout}`] : []),
+          ...(errorData.stderr ? [`Error output: ${errorData.stderr}`] : []),
+        ];
+        
+        setStatus(prev => [...prev, ...errorMessages]);
+        setIsRunning(false);
+        throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
+      if (!response.body) {
+        throw new Error('No response body');
       }
 
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
       try {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            console.log('Stream complete');
+            break;
+          }
 
           const text = decoder.decode(value);
           const lines = text.split('\n');
@@ -210,43 +227,68 @@ export default function AutoChat() {
                 const jsonStr = line.trim().replace('data: ', '');
                 const data = JSON.parse(jsonStr);
                 
-                if (data.type === 'status') {
+                if (data.type === 'error') {
+                  console.error('Received error:', data.message);
+                  setIsRunning(false);
+                  setStatus(prev => [...prev, `❌ ${data.message}`]);
+                } else if (data.type === 'status') {
+                  console.log('Received status:', data.message);
                   setStatus(prev => [...prev, data.message]);
-                  if (statusRef.current) {
-                    statusRef.current.scrollTop = statusRef.current.scrollHeight;
-                  }
+                }
+
+                // 自动滚动到底部
+                if (statusRef.current) {
+                  statusRef.current.scrollTop = statusRef.current.scrollHeight;
                 }
               } catch (e) {
-                // Removed console.error
+                console.error('Error parsing SSE message:', e);
+                setStatus(prev => [...prev, `Error parsing message: ${e}`]);
               }
             }
           }
         }
+      } catch (e) {
+        console.error('Error reading stream:', e);
+        setStatus(prev => [...prev, `Error reading stream: ${e}`]);
+        setIsRunning(false);
       } finally {
         reader.releaseLock();
       }
     } catch (error) {
-      // Removed console.error
-      setStatus(prev => [...prev, `Error: ${error}`]);
-    } finally {
+      console.error('Error in auto chat:', error);
       setIsRunning(false);
+      if (!status.some(s => s.startsWith('❌'))) {
+        setStatus(prev => [...prev, `❌ Error: ${error}`]);
+      }
     }
   };
 
   const handleStopAutoChat = async () => {
     try {
+      console.log('Attempting to stop auto chat...');
+      setStatus(prev => [...prev, 'Stopping auto chat...']);
+      
       const response = await fetch('/api/auto-chat/stop', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
 
+      console.log('Stop response:', response);
+      const data = await response.json();
+      console.log('Stop data:', data);
+      
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(data.message || data.error || `HTTP error! status: ${response.status}`);
       }
 
-      setStatus(prev => [...prev, 'Stopping auto chat...']);
-    } catch (error) {
-      // Removed console.error
-      setStatus(prev => [...prev, `Error stopping auto chat: ${error}`]);
+      setStatus(prev => [...prev, `✅ ${data.message || 'Auto chat stopped'}`]);
+      setIsRunning(false);
+    } catch (error: any) {
+      console.error('Error stopping auto chat:', error);
+      setStatus(prev => [...prev, `❌ Error stopping auto chat: ${error.message}`]);
+      // 不改变运行状态，让用户可以重试
     }
   };
 
@@ -289,7 +331,7 @@ export default function AutoChat() {
       const response = await fetch('/api/auto-chat/upload-message-source', {
         method: 'POST',
         body: formData
-      })
+      });
 
       const data = await response.json()
       if (!data.success) {
@@ -393,7 +435,7 @@ export default function AutoChat() {
             </div>
 
             {/* Test Results */}
-            {results.length > 0 && (
+            {results?.length > 0 && (
               <div className="mt-4">
                 <h4 className="text-sm font-medium text-gray-700 mb-2">测试结果:</h4>
                 <div className="overflow-x-auto">
@@ -632,12 +674,14 @@ export default function AutoChat() {
                 onClick={handleStartAutoChat}
                 disabled={isRunning || !targetGroup || (isTopic && !topicId)}
                 className={`px-4 py-2 rounded-md text-white ${
-                  isRunning || !targetGroup || (isTopic && !topicId)
+                  isRunning
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : !targetGroup || (isTopic && !topicId)
                     ? 'bg-gray-400 cursor-not-allowed'
                     : 'bg-blue-500 hover:bg-blue-600'
                 }`}
               >
-                {isRunning ? '运行中...' : '开始自动聊天'}
+                {isRunning ? '自动聊天进行中' : '开始自动聊天'}
               </button>
 
               <button
@@ -646,7 +690,7 @@ export default function AutoChat() {
                 className={`px-4 py-2 rounded-md text-white ${
                   !isRunning
                     ? 'bg-gray-400 cursor-not-allowed'
-                    : 'bg-red-500 hover:bg-red-600'
+                    : 'bg-blue-500 hover:bg-blue-600'
                 }`}
               >
                 停止自动聊天
@@ -664,7 +708,7 @@ export default function AutoChat() {
                     <h3 className="text-xl font-semibold mb-4">功能介绍</h3>
                     <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
                       自动水群 是一个自动化消息发送工具，可以按照预设的时间间隔自动发送消息到指定的 Telegram 群组或频道。 
-                      支持发送文本、图片、视频、贴纸等多种类型的消息；此外，有20%的几率随机回复别的消息，20%的几率对别的消息进行表情反应，让水群更真实。
+                      支持发送文本、图片、视频、贴纸等多种类型的消息；此外，有25%的几率随机回复别的消息，15%的几率对别的消息进行表情反应，让水群更真实。
                     </p>
                   </div>
 
@@ -701,33 +745,27 @@ export default function AutoChat() {
 
                   <div>
                     <h3 className="text-xl font-semibold mb-4">注意事项</h3>
-                    <ul className="list-disc pl-5 space-y-2 text-gray-600 dark:text-gray-400">
-                      <li>建议设置2-10秒的消息间隔，你也可以看情况自行调整；</li>
-                      <li>消息源文件必须包含正确的格式和必要的媒体文件；</li>
-                      <li>可以随时点击"停止自动聊天"按钮终止消息发送；</li>
+                    <ul className="space-y-2 text-gray-600 dark:text-gray-400">
+                      <li>• 建议设置2-10秒的消息间隔，你也可以看情况自行调整；</li>
+                      <li>• 消息源文件必须包含正确的格式和必要的媒体文件；</li>
+                      <li>• 可以随时点击"停止自动聊天"按钮终止消息发送；</li>
                     </ul>
                   </div>
 
                   <div>
                     <h3 className="text-xl font-semibold mb-4">常见问题</h3>
                     <div className="space-y-4">
-                      <div className="space-y-2">
-                        <h4 className="font-medium">Q: 为什么消息没有发送成功？</h4>
-                        <p className="text-gray-600 dark:text-gray-400 pl-4">
-                          A: 请检查：1) 机器人是否在群组中 2) 是否有发送权限 3) 消息源格式是否正确
-                        </p>
+                      <div>
+                        <p className="font-medium">Q: 为什么消息没有发送成功？</p>
+                        <p className="text-gray-600 dark:text-gray-400">A: 请检查：1) 账号是否在群组中 2) 账号是否有发送权限 3) 消息源文本格式是否正确</p>
                       </div>
-                      <div className="space-y-2">
-                        <h4 className="font-medium">Q: 如何准备消息源文件？</h4>
-                        <p className="text-gray-600 dark:text-gray-400 pl-4">
-                          A: 使用 Message Scraper 功能从其他群组抓取消息，或按照要求的格式准备 CSV 文件
-                        </p>
+                      <div>
+                        <p className="font-medium">Q: 如何准备消息源文件？</p>
+                        <p className="text-gray-600 dark:text-gray-400">A: 使用 <a href="/chat-scraper" className="text-blue-600 hover:text-blue-800">扒取群聊天</a> 功能从其他群组抓取消息，或按照要求的格式准备 CSV 文件</p>
                       </div>
-                      <div className="space-y-2">
-                        <h4 className="font-medium">Q: 支持哪些类型的消息？</h4>
-                        <p className="text-gray-600 dark:text-gray-400 pl-4">
-                          A: 支持文本、图片、视频、动图、贴纸等多种类型的消息
-                        </p>
+                      <div>
+                        <p className="font-medium">Q: 支持哪些类型的消息？</p>
+                        <p className="text-gray-600 dark:text-gray-400">A: 支持文本、图片、视频、动图、贴纸等多种类型的消息</p>
                       </div>
                     </div>
                   </div>

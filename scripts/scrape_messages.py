@@ -11,6 +11,7 @@ import json
 import logging
 from pathlib import Path
 import argparse
+import random
 from config import (
     API_ID,
     API_HASH,
@@ -34,6 +35,9 @@ logging.getLogger('telethon').setLevel(logging.WARNING)
 # Configure paths
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scraped_data')
 SESSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'sessions')
+
+def get_user_sessions_dir(user_email):
+    return os.path.join(SESSIONS_DIR, user_email)
 
 # Create necessary directories
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -60,7 +64,7 @@ async def download_media(message, group_folder):
                 if message.sticker:
                     file_name = f"sticker_{message.id}.webp"
                     media_type = "sticker"
-                    # 保存sticker信息
+                    # 只为贴纸保存额外信息
                     document = message.media.document
                     sticker_info = {
                         'id': document.id,
@@ -122,7 +126,7 @@ async def download_media(message, group_folder):
         logging.error(f"Failed to download media: {str(e)}")
     return None
 
-def get_message_content(message):
+async def get_message_content(message):
     """Get message content and type"""
     if message.media:
         if hasattr(message.media, 'document'):
@@ -139,225 +143,276 @@ def get_message_content(message):
     else:
         return message.text, "text"
 
-async def scrape_group(client, group_username, message_limit=1000):
-    """Scrape messages from a group"""
+async def connect_with_session(session_file, user_email):
+    """Connect to Telegram using session file with retry mechanism"""
+    MAX_RETRIES = 3
+    RETRY_DELAY = 5  # seconds
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Select a random proxy from the list
+            proxy_config = random.choice(PROXY_CONFIGS) if PROXY_CONFIGS else None
+            
+            client = TelegramClient(
+                session_file,
+                API_ID,
+                API_HASH,
+                proxy=proxy_config,
+                connection_retries=3,
+                retry_delay=3,
+                timeout=300,  # 增加到 300 秒
+                request_retries=3
+            )
+            
+            await client.connect()
+            
+            if not await client.is_user_authorized():
+                print(json.dumps({
+                    "type": "error",
+                    "message": "Session is not authorized"
+                }))
+                return None
+                
+            print(json.dumps({
+                "type": "info",
+                "message": "Successfully connected"
+            }))
+            return client
+            
+        except Exception as e:
+            error_msg = str(e)
+            if attempt < MAX_RETRIES - 1:
+                print(json.dumps({
+                    "type": "info",
+                    "message": f"Connection attempt {attempt + 1} failed, retrying in {RETRY_DELAY} seconds... Error: {error_msg}"
+                }))
+                await asyncio.sleep(RETRY_DELAY)
+                continue
+            
+            print(json.dumps({
+                "type": "error",
+                "message": f"Failed to connect with session {session_file}: {error_msg}"
+            }), file=sys.stderr)
+            return None
+    
+    print(json.dumps({
+        "type": "error",
+        "message": f"All connection attempts failed after {MAX_RETRIES} retries"
+    }), file=sys.stderr)
+    return None
+
+async def scrape_group(client, group_username, message_limit=1000, user_email=None):
+    """Scrape messages from a group with progress updates"""
     try:
-        # Remove @ if present
-        group_username = group_username.lstrip('@')
+        # Get the input entity with retry
+        MAX_RETRIES = 3
+        RETRY_DELAY = 5
+        entity = None
         
-        # Create group folder
-        group_folder = os.path.join(DATA_DIR, group_username)
+        for attempt in range(MAX_RETRIES):
+            try:
+                entity = await client.get_input_entity(group_username)
+                break
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    print(json.dumps({
+                        "type": "info",
+                        "message": f"Failed to get entity, attempt {attempt + 1}/{MAX_RETRIES}. Retrying in {RETRY_DELAY} seconds..."
+                    }))
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    raise e
+        
+        if not entity:
+            raise Exception("Failed to get group entity after all retries")
+            
+        # Create necessary directories
+        group_folder = os.path.join(DATA_DIR, user_email, sanitize_filename(group_username))
         os.makedirs(group_folder, exist_ok=True)
+        media_folder = os.path.join(group_folder, 'media')
+        os.makedirs(media_folder, exist_ok=True)
         
         # CSV file path
-        csv_file = os.path.join(group_folder, f'{group_username}_messages.csv')
+        csv_file = os.path.join(group_folder, f'{sanitize_filename(group_username)}_messages.csv')
         
-        # Get group entity
-        group_entity = await client.get_entity(group_username)
+        # Get total message count with retry
+        total_messages = 0
+        for attempt in range(MAX_RETRIES):
+            try:
+                # 计算实际的总消息数
+                async for _ in client.iter_messages(entity):
+                    total_messages += 1
+                    if total_messages >= message_limit:  # 如果达到限制就停止计数
+                        break
+                break
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    print(json.dumps({
+                        "type": "info",
+                        "message": f"Failed to get message count, attempt {attempt + 1}/{MAX_RETRIES}. Retrying..."
+                    }))
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    raise e
         
-        # Initialize progress
-        current_message = 0
-        media_files = 0
+        # 使用目标消息数量作为total
+        target_messages = min(total_messages, message_limit)
         
-        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['id', 'date', 'type', 'content', 'media_file'])
+        print(json.dumps({
+            'type': 'start',
+            'total': target_messages
+        }))
+        
+        # 第一步：先抓取所有消息内容
+        messages = []
+        processed = 0
+        last_progress = -1
+        last_update_time = time.time()
+        UPDATE_INTERVAL = 2  # 每2秒至少发送一次进度更新
+        
+        print(json.dumps({
+            'type': 'info',
+            'message': 'Step 1: Fetching messages...'
+        }))
+        
+        async for message in client.iter_messages(entity, limit=message_limit):
+            processed += 1
+            progress = int((processed / target_messages) * 100)
+            current_time = time.time()
             
-            async for message in client.iter_messages(group_entity, limit=message_limit):
-                # Skip messages from bots
-                if hasattr(message.sender, 'bot') and message.sender.bot:
-                    continue
+            if progress != last_progress or (current_time - last_update_time) >= UPDATE_INTERVAL:
+                print(json.dumps({
+                    'type': 'progress',
+                    'current': processed,
+                    'total': target_messages,
+                    'percentage': progress
+                }))
+                last_progress = progress
+                last_update_time = current_time
+            
+            try:
+                # 检查消息发送者是否是机器人
+                if message.sender and hasattr(message.sender, 'bot') and message.sender.bot:
+                    continue  # 跳过机器人的消息
                     
-                current_message += 1
-                
-                # Update progress
-                progress = {
-                    'current': current_message,
-                    'total': message_limit
-                }
-                print(json.dumps({'type': 'progress', 'data': progress}))
-                
-                # Get message content and type
-                content, msg_type = get_message_content(message)
-                
-                # Download media if present
-                media_path = None
-                if message.media:
-                    media_path = await download_media(message, group_folder)
-                    if media_path:
-                        media_files += 1
-                        media_path = os.path.relpath(media_path, group_folder)
-                
-                # Write to CSV
-                message_data = {
+                content, msg_type = await get_message_content(message)
+                messages.append({
                     'id': message.id,
                     'date': message.date.isoformat(),
                     'type': msg_type,
                     'content': content,
-                    'media_file': media_path
-                }
-                
-                if message.media:
-                    if hasattr(message.media, 'document'):
-                        if message.sticker:
-                            message_data['media_file'] = f'media/sticker_{message.id}.webp'
-                        else:
-                            original_filename = getattr(message.document, 'file_name', '')
-                            message_data['media_file'] = f'media/file_{message.id}_{original_filename}'
-                    elif hasattr(message.media, 'photo'):
-                        message_data['media_file'] = f'media/photo_{message.id}.jpg'
-                
-                writer.writerow(message_data.values())
-        
-        # Return results
-        result = {
-            'group': group_username,
-            'totalMessages': current_message,
-            'mediaFiles': media_files,
-            'csvFile': csv_file,
-            'folderPath': group_folder
-        }
-        print(json.dumps({'type': 'result', 'data': result}))
-        return result
-        
-    except Exception as e:
-        error_msg = str(e)
-        print(json.dumps({'type': 'error', 'message': error_msg}))
-        raise Exception(error_msg)
-
-async def connect_with_session(session_file):
-    """Connect to Telegram using session file"""
-    try:
-        # Get full path to session file
-        session_path = os.path.join(SESSIONS_DIR, session_file)
-        
-        # Try each proxy configuration
-        for proxy_config in PROXY_CONFIGS:
-            try:
-                client = TelegramClient(
-                    session_path,
-                    API_ID,
-                    API_HASH,
-                    proxy={
-                        'proxy_type': proxy_config.get('proxy_type', 'socks5'),
-                        'addr': proxy_config['addr'],
-                        'port': proxy_config['port'],
-                        'username': proxy_config.get('username'),
-                        'password': proxy_config.get('password')
-                    }
-                )
-                
-                print(json.dumps({
-                    "type": "debug",
-                    "message": f"Attempting to connect with proxy: {proxy_config['addr']}:{proxy_config['port']}"
-                }))
-                
-                await client.connect()
-                if await client.is_user_authorized():
-                    print(json.dumps({
-                        "type": "info",
-                        "message": f"Successfully connected to Telegram (using proxy: {proxy_config['addr']}:{proxy_config['port']})"
-                    }))
-                    return client
-                else:
-                    print(json.dumps({
-                        "type": "error",
-                        "message": "Client not authorized"
-                    }))
-                    
+                    'media_file': ''  # 先留空，后面再处理媒体文件
+                })
             except Exception as e:
                 print(json.dumps({
-                    "type": "error",
-                    "message": f"Connection error with proxy {proxy_config['addr']}: {str(e)}"
+                    'type': 'warning',
+                    'message': f'Error processing message {message.id}: {str(e)}'
                 }))
                 continue
+        
+        # 写入消息到CSV
+        print(json.dumps({
+            'type': 'info',
+            'message': 'Writing messages to CSV file...'
+        }))
+        
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['id', 'date', 'type', 'content', 'media_file'])
+            writer.writeheader()
+            writer.writerows(messages)
+        
+        # 在开始处理媒体文件之前，先发送结果信息
+        print(json.dumps({
+            'type': 'result',
+            'data': {
+                'group': group_username,
+                'totalMessages': len(messages),
+                'mediaFiles': len([msg for msg in messages if msg['type'] in ['photo', 'video', 'sticker', 'file']]),
+                'csvFile': csv_file,
+                'folderPath': group_folder
+            }
+        }))
+
+        print(json.dumps({
+            'type': 'info',
+            'message': 'Step 2: Processing media files...'
+        }))
+        
+        # 处理媒体文件
+        media_messages = [msg for msg in messages if msg['type'] in ['photo', 'video', 'sticker', 'file']]
+        for i, msg in enumerate(media_messages, 1):
+            try:
+                print(json.dumps({
+                    'type': 'progress',
+                    'current': i,
+                    'total': len(media_messages),
+                    'percentage': int((i / len(media_messages)) * 100),
+                    'message': f'Processing media file {i}/{len(media_messages)}'
+                }))
                 
-        return None
+                # 获取原始消息对象
+                msg_obj = await client.get_messages(entity, ids=msg['id'])
+                if msg_obj and msg_obj.media:
+                    media_path = await download_media(msg_obj, group_folder)
+                    if media_path:
+                        msg['media_file'] = media_path
+            except Exception as e:
+                print(json.dumps({
+                    'type': 'warning',
+                    'message': f'Failed to process media for message {msg["id"]}: {str(e)}'
+                }))
+        
+        # 更新CSV中的媒体文件路径
+        print(json.dumps({
+            'type': 'info',
+            'message': 'Updating CSV with media file paths...'
+        }))
+        
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['id', 'date', 'type', 'content', 'media_file'])
+            writer.writeheader()
+            writer.writerows(messages)
+        
+        # 发送完成消息，包含更多信息
+        print(json.dumps({
+            'type': 'complete',
+            'message': 'Successfully scraped messages',
+            'csv_file': csv_file
+        }))
         
     except Exception as e:
         print(json.dumps({
-            "type": "error",
-            "message": f"Failed to connect: {str(e)}"
+            'type': 'error',
+            'message': str(e)
         }))
-        return None
+        raise e
 
 async def main():
     parser = argparse.ArgumentParser(description='Scrape messages from Telegram group')
-    parser.add_argument('--group', type=str, required=True, help='Group username or invite link')
+    parser.add_argument('--session', required=True, help='Path to session file')
+    parser.add_argument('--group', required=True, help='Group username or ID')
     parser.add_argument('--limit', type=int, default=1000, help='Maximum number of messages to scrape')
+    parser.add_argument('--user-email', required=True, help='User email for organizing data')
+    parser.add_argument('--timeout', type=int, default=90, help='Timeout in seconds')
     
     args = parser.parse_args()
     
-    print(json.dumps({
-        "type": "info",
-        "message": f"Starting to scrape group: @{args.group}"
-    }))
-    print(json.dumps({
-        "type": "info",
-        "message": f"Message limit: {args.limit}"
-    }))
-    
-    session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
-    
-    if not session_files:
-        print(json.dumps({
-            "type": "error",
-            "message": "No session files found in the sessions directory"
-        }))
+    try:
+        client = await connect_with_session(args.session, args.user_email)
+        await scrape_group(client, args.group, args.limit, args.user_email)
+    except Exception as e:
+        logging.error(f"Error: {str(e)}")
         sys.exit(1)
-    
-    for session_file in session_files:
+    finally:
         try:
-            print(json.dumps({
-                "type": "info",
-                "message": f"Trying session file: {session_file}"
-            }))
-            
-            session_path = os.path.join(SESSIONS_DIR, session_file)
-            
-            client = None
-            for proxy_config in PROXY_CONFIGS:
-                try:
-                    client = await connect_with_session(session_path)
-                    if client:
-                        break
-                except Exception as e:
-                    print(json.dumps({
-                        "type": "error",
-                        "message": f"Failed to connect using proxy {proxy_config['addr']}: {str(e)}"
-                    }))
-                    continue
-            
-            if not client:
-                print(json.dumps({
-                    "type": "error",
-                    "message": f"Failed to connect using session file: {session_file}"
-                }))
-                continue
-            
-            result = await scrape_group(client, args.group, args.limit)
-            if result:
-                await client.disconnect()
-                sys.exit(0)
-                
-        except Exception as e:
-            print(json.dumps({
-                "type": "error",
-                "message": str(e)
-            }))
-            if client:
-                await client.disconnect()
-            continue
-    
-    print(json.dumps({
-        "type": "error",
-        "message": "All session files failed"
-    }))
-    sys.exit(1)
+            await client.disconnect()
+        except:
+            pass
 
 if __name__ == "__main__":
     import sys
     import os
+    import time
     
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

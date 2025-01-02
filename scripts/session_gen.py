@@ -3,16 +3,21 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 import os
 import asyncio
+import argparse
 from telethon.errors import FloodWaitError, TimeoutError, PasswordHashInvalidError
 from config import (
     API_ID,
     API_HASH,
-    SESSIONS_DIR,
+    get_user_sessions_dir,
     DEFAULT_PROXY
 )
 
-async def try_connect(phone, sessions_dir, max_attempts=3):
+async def try_connect(phone, user_email, max_attempts=3):
     """Try to connect with retry mechanism"""
+    # 获取用户特定的session目录
+    sessions_dir = get_user_sessions_dir(user_email)
+    os.makedirs(sessions_dir, exist_ok=True)
+    
     session_file = os.path.join(sessions_dir, f"{phone}.session")
     
     for attempt in range(max_attempts):
@@ -49,62 +54,52 @@ async def try_connect(phone, sessions_dir, max_attempts=3):
                 return True
                 
         except FloodWaitError as e:
-            print(f"[ERROR] Too many requests, wait for {e.seconds} seconds")
-            await client.disconnect()
-            return False
-            
-        except TimeoutError:
-            print(f"[ERROR] Connection timeout (attempt {attempt + 1}/{max_attempts})")
-            try:
-                await client.disconnect()
-            except:
-                pass
-            
+            print(f"\n[ERROR] Hit flood wait error. Need to wait {e.seconds} seconds")
             if attempt < max_attempts - 1:
-                # Wait for a while before retrying
-                await asyncio.sleep(5)
-                continue
+                print(f"Waiting {e.seconds} seconds before next attempt...")
+                await asyncio.sleep(e.seconds)
             else:
-                print("[ERROR] Max retry attempts reached")
-                return False
-            
-        except PasswordHashInvalidError:
-            print("[ERROR] Invalid 2FA password")
-            try:
-                await client.disconnect()
-            except:
-                pass
-            return False
-            
+                raise e
+                
+        except TimeoutError:
+            print("\n[ERROR] Request timed out")
+            if attempt < max_attempts - 1:
+                print("Retrying...")
+                await asyncio.sleep(1)
+            else:
+                raise TimeoutError("Max retry attempts reached")
+                
         except Exception as e:
-            print(f"[ERROR] Connection error: {str(e)}")
+            print(f"\n[ERROR] Failed to connect: {str(e)}")
+            if attempt < max_attempts - 1:
+                print("Retrying...")
+                await asyncio.sleep(1)
+            else:
+                raise e
+                
+        finally:
             try:
                 await client.disconnect()
             except:
                 pass
-            return False
-    
+                
     return False
 
 async def main():
-    # Get phone number from command line argument
-    if len(sys.argv) < 2:
-        print("Please provide phone number as command line argument")
+    parser = argparse.ArgumentParser(description='Generate Telegram session file')
+    parser.add_argument('phone', help='Phone number with country code')
+    parser.add_argument('--output-dir', help='Output directory for session file')
+    parser.add_argument('--user-email', help='User email for session directory', required=True)
+    args = parser.parse_args()
+    
+    try:
+        success = await try_connect(args.phone, args.user_email)
+        if not success:
+            print("\n[ERROR] Failed to create session after all attempts")
+            sys.exit(1)
+    except Exception as e:
+        print(f"\n[ERROR] {str(e)}")
         sys.exit(1)
-
-    phone = sys.argv[1]
-    print(f"\nProcessing phone number: {phone}")
-    
-    # Create sessions directory if it doesn't exist
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
-    
-    # Try to connect
-    success = await try_connect(phone, SESSIONS_DIR)
-    if not success:
-        print(f"\n[FAILED] Session generation failed for {phone}!")
-        sys.exit(1)
-    
-    sys.exit(0)
 
 if __name__ == '__main__':
     asyncio.run(main())

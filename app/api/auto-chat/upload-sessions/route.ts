@@ -2,9 +2,35 @@ import { NextResponse } from 'next/server'
 import { writeFile } from 'fs/promises'
 import path from 'path'
 import { mkdir } from 'fs/promises'
+import { cookies } from 'next/headers'
+import * as jose from 'jose'
+
+const JWT_SECRET = new TextEncoder().encode('your-jwt-secret-key')
 
 export async function POST(req: Request) {
   try {
+    // 验证用户身份
+    const cookieStore = await cookies()
+    const token = await cookieStore.get('auth-token')
+    
+    if (!token) {
+      return NextResponse.json(
+        { success: false, message: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // 解析JWT获取用户邮箱
+    const { payload } = await jose.jwtVerify(token.value, JWT_SECRET)
+    const userEmail = payload.username as string
+
+    if (!userEmail) {
+      return NextResponse.json(
+        { success: false, message: 'Invalid token' },
+        { status: 401 }
+      )
+    }
+
     const formData = await req.formData()
     const files = formData.getAll('sessions')
 
@@ -17,11 +43,11 @@ export async function POST(req: Request) {
 
     // Get sessions directory path
     const rootDir = process.env.VERCEL ? '/tmp' : path.resolve(process.cwd())
-    const sessionsDir = path.join(rootDir, 'sessions')
+    const userSessionsDir = path.join(rootDir, 'sessions', userEmail)
 
-    // Create sessions directory if it doesn't exist
+    // Create user's sessions directory if it doesn't exist
     try {
-      await mkdir(sessionsDir, { recursive: true })
+      await mkdir(userSessionsDir, { recursive: true })
     } catch (error) {
       // Ignore error if directory already exists
     }
@@ -46,41 +72,27 @@ export async function POST(req: Request) {
       try {
         const bytes = await file.arrayBuffer()
         const buffer = Buffer.from(bytes)
-        const filePath = path.join(sessionsDir, file.name)
+        const filePath = path.join(userSessionsDir, file.name)
 
         await writeFile(filePath, buffer)
         results.push({
           file: file.name,
           success: true
         })
-      } catch (error: any) {
+      } catch (error) {
         results.push({
           file: file.name,
           success: false,
-          message: error.message
+          message: 'Failed to save file'
         })
       }
     }
 
-    // Check if any files were successfully uploaded
-    const anySuccess = results.some(r => r.success)
-    if (!anySuccess) {
-      return NextResponse.json(
-        { success: false, message: 'No files were uploaded successfully', results },
-        { status: 400 }
-      )
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: 'Files uploaded successfully',
-      results
-    })
-
-  } catch (error: any) {
-    console.error('Upload error:', error)
+    return NextResponse.json({ success: true, results })
+  } catch (error) {
+    console.error('Error uploading sessions:', error)
     return NextResponse.json(
-      { success: false, message: error.message },
+      { success: false, message: 'Internal server error' },
       { status: 500 }
     )
   }

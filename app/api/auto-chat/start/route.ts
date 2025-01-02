@@ -1,145 +1,171 @@
-import { NextResponse } from 'next/server';
-import { spawn } from 'child_process';
-import path from 'path';
+import { NextRequest, NextResponse } from 'next/server'
+import { verifyAuth, handleAuthError } from '@/lib/auth'
+import { PrismaClient } from '@prisma/client'
+import { spawn } from 'child_process'
+import path from 'path'
+
+const prisma = new PrismaClient()
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // 5 minutes timeout
 
-export async function POST(req: Request) {
+export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const { targetGroup, isTopic, topicId, messageInterval, messageSource } = await req.json();
-
-    // Validate input
-    if (!targetGroup) {
-      return NextResponse.json({ error: 'Target group is required' }, { status: 400 });
+    // 验证用户身份
+    const auth = await verifyAuth(request)
+    if (!auth.success) {
+      return handleAuthError(auth.error!)
     }
 
-    if (!messageSource) {
-      return NextResponse.json({ error: 'Message source is required' }, { status: 400 });
-    }
+    const { email } = auth.user!
+    const data = await request.json()
 
-    // Parse message interval
-    const [minInterval, maxInterval] = messageInterval.split('-').map(Number);
-    if (isNaN(minInterval) || isNaN(maxInterval) || minInterval < 0 || maxInterval < minInterval) {
-      return NextResponse.json({ error: 'Invalid message interval format' }, { status: 400 });
-    }
+    // 获取请求参数
+    console.log("Request parameters:", data);
 
-    // Get absolute paths
-    if (process.env.VERCEL) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          message: 'This feature is not available in the cloud version. Please use the local version for auto chat functionality.'
-        },
-        { status: 400 }
-      )
-    }
-
-    const rootDir = process.cwd();
-    const scriptPath = path.join(rootDir, 'scripts', 'auto_chat.py');
-    const scrapedDataPath = path.join(rootDir, 'scraped_data');
-    
-    console.log('Root directory:', rootDir);
-    console.log('Script path:', scriptPath);
-    console.log('Scraped data path:', scrapedDataPath);
-
-    // Prepare command arguments
-    const args = [
-      scriptPath,
-      '--target-group', targetGroup,
-      '--min-interval', minInterval.toString(),
-      '--max-interval', maxInterval.toString(),
-      '--message-source', messageSource,
-      '--root-dir', rootDir  // Pass root directory to Python script
-    ];
-
-    if (isTopic) {
-      args.push('--topic');
-      if (topicId) {
-        args.push('--topic-id', topicId.toString());
+    return new Promise((resolve) => {
+      const rootDir = process.cwd();
+      const scriptPath = path.join(rootDir, 'scripts', 'auto_chat.py');
+      
+      console.log("\nPreparing to run Python script:");
+      console.log(`Root directory: ${rootDir}`);
+      console.log(`Script path: ${scriptPath}`);
+      console.log(`User email: ${email}`);
+      
+      // 检查脚本文件是否存在
+      const fs = require('fs');
+      if (!fs.existsSync(scriptPath)) {
+        console.error(`Error: Script file not found: ${scriptPath}`);
+        resolve(NextResponse.json({
+          success: false,
+          message: 'Auto chat script not found',
+          error: `Script file not found: ${scriptPath}`
+        }, { status: 500 }));
+        return;
       }
-    }
+      
+      // 构建命令行参数
+      const args = [
+        scriptPath,
+        '--user-email', email,
+        '--root-dir', 'D:/tg-bot-web',  // 使用正斜杠
+        '--target-group', data.targetGroup,
+        '--message-source', data.messageSource,
+        '--min-interval', data.messageInterval.split('-')[0],
+        '--max-interval', data.messageInterval.split('-')[1]
+      ];
 
-    console.log('Target group:', targetGroup);
-    console.log('Is topic:', isTopic);
-    console.log('Topic ID:', topicId);
-    console.log('Message source:', messageSource);
+      if (data.isTopic) {
+        args.push('--topic');
+        args.push('--topic-id', data.topicId);
+      }
 
-    console.log('Running command:', 'python', args.join(' '));
+      console.log("\nCommand arguments:", args);
 
-    // Create response stream
-    const encoder = new TextEncoder();
-    const stream = new TransformStream();
-    const writer = stream.writable.getWriter();
+      // 创建进程
+      console.log("Spawning Python process...");
+      const pythonProcess = spawn('python', ['-u', ...args], {  
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: '1',  // 禁用输出缓冲
+          PYTHONIOENCODING: 'utf-8'
+        }
+      });
 
-    // Write initial status
-    writer.write(
-      encoder.encode(`data: ${JSON.stringify({ type: 'status', message: 'Initializing Python process...\n' })}\n\n`)
-    );
+      let stdoutData = '';
+      let stderrData = '';
+      let processStarted = false;
 
-    // Spawn Python process
-    const pythonProcess = spawn('python', args, {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: 'utf-8',
-        PYTHONUNBUFFERED: '1'
+      pythonProcess.stdout.on('data', (data) => {
+        processStarted = true;
+        const text = data.toString();
+        stdoutData += text;
+        console.log('Python stdout:', text);
+        // 发送状态更新
+        resolve(NextResponse.json({
+          success: true,
+          message: 'Auto chat process started successfully',
+          data: text.trim()
+        }));
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        processStarted = true;
+        const text = data.toString();
+        stderrData += text;
+        console.error('Python stderr:', text);
+        // 发送错误信息
+        resolve(NextResponse.json({
+          success: false,
+          message: 'Auto chat process failed',
+          error: text.trim()
+        }));
+      });
+
+      pythonProcess.on('error', (error) => {
+        console.error('Failed to start Python process:', error);
+        resolve(NextResponse.json({
+          success: false,
+          message: 'Failed to start auto chat process',
+          error: error.message,
+          command: 'python',
+          args: args
+        }, { status: 500 }));
+      });
+
+      // 设置超时检查
+      const timeout = setTimeout(() => {
+        if (!processStarted) {
+          console.error('Python process failed to start within timeout');
+          pythonProcess.kill();
+          resolve(NextResponse.json({
+            success: false,
+            message: 'Auto chat process failed to start within timeout',
+            error: 'Process timeout',
+            stdout: stdoutData,
+            stderr: stderrData
+          }, { status: 500 }));
+        }
+      }, 30000); 
+
+      pythonProcess.on('close', (code) => {
+        clearTimeout(timeout);
+        console.log(`\nPython process exited with code ${code}`);
+        console.log('Total stdout:', stdoutData);
+        console.log('Total stderr:', stderrData);
+        
+        if (code === 0) {
+          resolve(NextResponse.json({
+            success: true,
+            message: 'Auto chat process started successfully'
+          }));
+        } else {
+          // 尝试从输出中提取具体的错误信息
+          const errorMessage = stderrData || stdoutData.split('\n').find(line => line.includes('Error:'));
+          resolve(NextResponse.json({
+            success: false,
+            message: 'Auto chat process failed',
+            error: errorMessage || 'Unknown error',
+            stdout: stdoutData,
+            stderr: stderrData,
+            code,
+            command: 'python',
+            args: args,
+            workingDirectory: process.cwd()
+          }, { status: 500 }));
+        }
+      });
+    });
+  } catch (error: any) {
+    console.error('Error in auto-chat/start:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        message: 'Internal server error',
+        error: error.message,
+        stack: error.stack
       },
-      shell: true
-    });
-
-    // Log process information
-    writer.write(
-      encoder.encode(`data: ${JSON.stringify({ 
-        type: 'status', 
-        message: `Starting Python process with arguments: python ${args.join(' ')}\n` 
-      })}\n\n`)
+      { status: 500 }
     );
-
-    // Handle process output
-    pythonProcess.stdout.on('data', (data) => {
-      const message = data.toString();
-      console.log('Python stdout:', message);
-      writer.write(
-        encoder.encode(`data: ${JSON.stringify({ type: 'status', message })}\n\n`)
-      );
-    });
-
-    pythonProcess.stderr.on('data', (data) => {
-      const message = data.toString();
-      console.log('Python stderr:', message);
-      writer.write(
-        encoder.encode(`data: ${JSON.stringify({ type: 'status', message })}\n\n`)
-      );
-    });
-
-    pythonProcess.on('close', (code) => {
-      console.log(`Python process exited with code ${code}`);
-      writer.write(
-        encoder.encode(`data: ${JSON.stringify({ type: 'status', message: `Process completed with code ${code}\n` })}\n\n`)
-      );
-      writer.close();
-    });
-
-    pythonProcess.on('error', (err) => {
-      console.error('Failed to start Python process:', err);
-      writer.write(
-        encoder.encode(`data: ${JSON.stringify({ type: 'status', message: `Error: ${err.message}\n` })}\n\n`)
-      );
-      writer.close();
-    });
-
-    // Return streaming response
-    return new NextResponse(stream.readable, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
-
-  } catch (error) {
-    console.error('Error in auto-chat start:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

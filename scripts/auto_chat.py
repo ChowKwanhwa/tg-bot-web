@@ -16,24 +16,49 @@ import argparse
 from config import (
     API_ID,
     API_HASH,
-    SESSIONS_DIR,
+    BASE_SESSIONS_DIR as SESSIONS_DIR,
     MEDIA_DIR,
     REACTION_EMOJIS,
     PROXY_CONFIGS
 )
 
+# 立即输出启动信息
+print("=== Auto Chat Script Starting ===")
+print(f"Python version: {sys.version}")
+print(f"Current working directory: {os.getcwd()}")
+print(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+sys.stdout.flush()  # 确保立即输出
+
 # Set UTF-8 as default encoding for stdout
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 def check_dependencies():
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("All dependencies installed successfully!")
-    except Exception as e:
-        print(f"Error installing dependencies: {str(e)}")
+    """检查所需的包是否已安装"""
+    required_packages = {
+        'telethon': 'Telethon',
+        'pandas': 'pandas',
+        'emoji': 'emoji',
+        'python_socks': 'python-socks[asyncio]'
+    }
+    
+    missing_packages = []
+    
+    for import_name, package_name in required_packages.items():
+        try:
+            __import__(import_name)
+            print(f"Package {package_name} is installed")
+        except ImportError as e:
+            print(f"Failed to import {package_name}: {str(e)}")
+            missing_packages.append(package_name)
+    
+    if missing_packages:
+        print("\nMissing required packages:", ", ".join(missing_packages))
+        print("Please install them using: pip install -r requirements.txt")
         sys.exit(1)
+    else:
+        print("\nAll required packages are installed")
 
-# Check and install dependencies
+# Check dependencies
 check_dependencies()
 
 def parse_args():
@@ -45,84 +70,116 @@ def parse_args():
     parser.add_argument('--max-interval', type=float, required=True, help='Maximum interval between messages')
     parser.add_argument('--message-source', required=True, help='Name of the message source folder')
     parser.add_argument('--root-dir', required=True, help='Root directory of the project')
+    parser.add_argument('--user-email', required=True, help='User email for session directory')
     return parser.parse_args()
 
-async def try_connect_with_proxy(session_file, proxy_config):
+async def try_connect_with_proxy(session_file, proxy_config, user_email):
     """Try to connect using specific proxy"""
     client = None
     try:
-        print(f"Checking directory: {SESSIONS_DIR}")
-        if not os.path.exists(SESSIONS_DIR):
-            print(f"Creating directory: {SESSIONS_DIR}")
-            os.makedirs(SESSIONS_DIR)
-            
-        session_path = os.path.join(SESSIONS_DIR, session_file.replace('.session', ''))
-        print(f"Using session path: {session_path}")
+        print(f"\nTrying to connect with session {session_file} using proxy {proxy_config['addr']}:{proxy_config['port']}")
         
+        # 构建完整的session文件路径
+        session_path = os.path.join(SESSIONS_DIR, user_email, session_file)
+        print(f"Session file path: {session_path}")
+        print(f"Session file exists: {os.path.exists(session_path)}")
+        
+        # 创建代理配置
+        proxy = {
+            'proxy_type': proxy_config['proxy_type'],
+            'addr': proxy_config['addr'],
+            'port': proxy_config['port'],
+            'username': proxy_config['username'],
+            'password': proxy_config['password'],
+            'rdns': True
+        }
+        
+        # 创建客户端
         client = TelegramClient(
-            session_path, 
-            API_ID, 
-            API_HASH, 
-            proxy=proxy_config,
-            connection_retries=3,
-            retry_delay=1
+            session_path,
+            API_ID,
+            API_HASH,
+            proxy=proxy
         )
         
-        print(f"Attempting to connect using proxy {proxy_config['addr']}:{proxy_config['port']}...")
+        print("Connecting to Telegram...")
         await client.connect()
         
-        if await client.is_user_authorized():
-            me = await client.get_me()
-            print(f"[SUCCESS] Connected successfully using proxy {proxy_config['addr']}!")
-            print(f"       Account: {me.first_name} (@{me.username})")
-            return client
-        
-        await client.disconnect()
-        print(f"[FAILED] Connection failed using proxy {proxy_config['addr']}: Not authorized")
-        return None
+        if not await client.is_user_authorized():
+            print(f"[FAILED] Session {session_file} is not authorized")
+            await client.disconnect()
+            return None
+            
+        me = await client.get_me()
+        print(f"[SUCCESS] Connected successfully with {session_file}")
+        print(f"       Account: {me.first_name} (@{me.username})")
+        return client
         
     except Exception as e:
-        print(f"[FAILED] Connection failed using proxy {proxy_config['addr']}: {str(e)}")
-        try:
-            if client:
+        print(f"[FAILED] Connection failed for {session_file} using proxy {proxy_config['addr']}: {str(e)}")
+        if client:
+            try:
                 await client.disconnect()
-        except:
-            pass
+            except:
+                pass
         return None
 
-async def init_clients():
+async def init_clients(user_email):
     """Initialize all clients with proxy rotation"""
     try:
-        print(f"Checking sessions directory: {SESSIONS_DIR}")
-        if not os.path.exists(SESSIONS_DIR):
-            print("Sessions directory does not exist")
-            return []
+        # 构建用户特定的session目录
+        user_sessions_dir = os.path.join(SESSIONS_DIR, user_email)
+        print(f"\nInitializing clients for user: {user_email}")
+        print(f"Sessions directory: {user_sessions_dir}")
+        print(f"Sessions directory exists: {os.path.exists(user_sessions_dir)}")
+        print(f"Current working directory: {os.getcwd()}")
+        
+        if not os.path.exists(user_sessions_dir):
+            print(f"Creating sessions directory: {user_sessions_dir}")
+            os.makedirs(user_sessions_dir, exist_ok=True)
             
-        session_files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session')]
-        print(f"Found {len(session_files)} session files: {session_files}")
+        session_files = [f for f in os.listdir(user_sessions_dir) if f.endswith('.session')]
+        print(f"\nFound {len(session_files)} session files:")
+        for sf in session_files:
+            print(f" - {sf}")
         
         if not session_files:
-            print("No session files found")
+            print("\nNo session files found. Please generate sessions first.")
             return []
             
+        print("\nTesting proxy configurations:")
+        for i, proxy in enumerate(PROXY_CONFIGS):
+            print(f" {i+1}. {proxy['proxy_type']}://{proxy['addr']}:{proxy['port']}")
+            
         clients = []
+        successful_clients = 0
         
         for session_file in session_files:
+            print(f"\nTrying to connect with session: {session_file}")
             client = None
+            
             # Try all proxies
             for proxy in PROXY_CONFIGS:
-                client = await try_connect_with_proxy(session_file, proxy)
+                client = await try_connect_with_proxy(session_file, proxy, user_email)
                 if client:
                     clients.append(client)
+                    successful_clients += 1
+                    print(f"Successfully connected {successful_clients}/{len(session_files)} clients")
                     break
             
             if not client:
                 print(f"Warning: {session_file} failed to connect with all proxies!")
         
+        print(f"\nClient initialization complete:")
+        print(f"Total sessions: {len(session_files)}")
+        print(f"Successful connections: {successful_clients}")
+        
         return clients
         
     except Exception as e:
         print(f"Error initializing clients: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return []
 
 async def join_group(client, target_group):
@@ -193,24 +250,40 @@ async def get_sticker_from_message(client, message_data, media_dir):
 async def process_message(client, message_data, target_group, recent_messages, topic_id=None, media_dir=None):
     """Process a single message"""
     try:
-        channel = await client.get_entity(target_group)
+        print(f"\nProcessing message data:")
+        print(f"Type: {message_data['type']}")
+        print(f"Content: {message_data['content'][:50]}..." if not pd.isna(message_data['content']) else "No content")
+        print(f"Media file: {message_data['media_file']}" if not pd.isna(message_data['media_file']) else "No media")
+        print(f"Topic ID: {topic_id}")
+        
+        # 获取目标群组实体
+        try:
+            channel = await client.get_entity(target_group)
+            print(f"Successfully got channel entity: {channel.title}")
+        except Exception as e:
+            print(f"Failed to get channel entity: {str(e)}")
+            raise
         
         # 基础发送参数
         kwargs = {}
         if topic_id:  # 如果指定了topic_id，所有消息都需要发送到对应的topic
             kwargs['reply_to'] = topic_id
+            print(f"Setting reply_to topic: {topic_id}")
             
         random_value = random.random()
+        print(f"Random value for interaction: {random_value}")
         
         # 25% 概率回复消息
         if random_value < 0.25 and recent_messages:
             target_message = recent_messages[-1]  # 回复最新消息
             kwargs['reply_to'] = target_message.id
+            print(f"Will reply to message: {target_message.id}")
         
         # 15% 概率添加表情回应
         elif random_value < 0.40 and recent_messages:  # 0.25 + 0.15 = 0.40
             target_message = recent_messages[-1]
             reaction = random.choice(REACTION_EMOJIS)
+            print(f"Will react with {reaction} to message: {target_message.id}")
             try:
                 await client(SendReactionRequest(
                     peer=channel,
@@ -218,16 +291,18 @@ async def process_message(client, message_data, target_group, recent_messages, t
                     reaction=[ReactionEmoji(emoticon=reaction)]
                 ))
                 me = await client.get_me()
-                print(f"[{me.first_name}] Reacted with {reaction} to message {target_message.id}")
+                print(f"[{me.first_name}] Successfully reacted with {reaction}")
+                return
             except Exception as e:
                 print(f"Failed to add reaction: {str(e)}")
+                traceback.print_exc()
             return
             
         # 发送消息（包括普通发送和回复）
         if message_data['type'] in ['photo', 'file', 'sticker']:
-            print(f"\nDebug media paths:")
-            print(f"media_dir: {media_dir}")
-            print(f"media_file from message_data: {message_data['media_file']}")
+            print(f"\nProcessing media message:")
+            print(f"Media directory: {media_dir}")
+            print(f"Media type: {message_data['type']}")
             
             # 检查media_file是否为空或NaN
             if pd.isna(message_data['media_file']):
@@ -242,7 +317,7 @@ async def process_message(client, message_data, target_group, recent_messages, t
                 
             # 构建完整路径
             media_path = os.path.normpath(os.path.join(media_dir, media_file))
-            print(f"Constructed media_path: {media_path}")
+            print(f"Full media path: {media_path}")
             print(f"File exists: {os.path.exists(media_path)}")
             
             if os.path.exists(media_path):
@@ -251,10 +326,12 @@ async def process_message(client, message_data, target_group, recent_messages, t
                 print(f"File extension: {file_ext}")
                 
                 if message_data['type'] == 'sticker':
+                    print("Processing sticker...")
                     # 尝试使用 sticker ID 发送
                     sticker = await get_sticker_from_message(client, message_data, media_dir)
                     if sticker:
                         try:
+                            print(f"Got sticker ID: {sticker.id}")
                             # 创建 InputMediaDocument
                             media = types.InputMediaDocument(
                                 id=sticker,
@@ -269,13 +346,14 @@ async def process_message(client, message_data, target_group, recent_messages, t
                                 file=media,  # 使用 media 参数
                                 **kwargs
                             )
-                            print(f"Sent sticker using ID: {sticker.id}")
+                            print(f"Successfully sent sticker using ID: {sticker.id}")
                             return
                         except Exception as e:
-                            print(f"Failed to send sticker using ID, falling back to file: {str(e)}")
+                            print(f"Failed to send sticker using ID: {str(e)}")
                             traceback.print_exc()
                     
                     # 如果使用 ID 发送失败，尝试直接发送文件
+                    print("Falling back to sending sticker as file...")
                     try:
                         await client.send_file(
                             channel,
@@ -283,7 +361,7 @@ async def process_message(client, message_data, target_group, recent_messages, t
                             force_document=True,  # 强制作为文档发送
                             **kwargs
                         )
-                        print(f"Sent sticker as file: {media_path}")
+                        print(f"Successfully sent sticker as file: {media_path}")
                         return
                     except Exception as e:
                         print(f"Failed to send sticker as file: {str(e)}")
@@ -291,138 +369,244 @@ async def process_message(client, message_data, target_group, recent_messages, t
                         return
                         
                 elif message_data['type'] == 'photo':
+                    print("Sending photo...")
                     await client.send_file(
                         channel,
                         media_path,
                         **kwargs
                     )
+                    print("Successfully sent photo")
                 else:  # file
+                    print("Sending file...")
                     await client.send_file(
                         channel,
                         media_path,
                         **kwargs
                     )
+                    print("Successfully sent file")
             else:
-                print(f"Media file not found: {media_path}")
-                # 打印当前工作目录以便调试
+                print(f"Error: Media file not found: {media_path}")
                 print(f"Current working directory: {os.getcwd()}")
                 return
                 
         elif message_data['type'] == 'text':
+            print("Sending text message...")
+            if pd.isna(message_data['content']):
+                print("Error: Message content is empty")
+                return
+                
             await client.send_message(
                 channel,
                 message_data['content'],
                 **kwargs
             )
+            print("Successfully sent text message")
             
         me = await client.get_me()
-        print(f"[{me.first_name}] Sent message: {message_data['content'][:50]}...")
+        content_preview = message_data['content'][:50] if not pd.isna(message_data['content']) else "[Media message]"
+        print(f"[{me.first_name}] Successfully sent message: {content_preview}...")
         
     except Exception as e:
         print(f"Failed to process message: {str(e)}")
+        traceback.print_exc()
+        raise  # 重新抛出异常，让上层函数处理
 
 async def run_chat_loop(clients, df, args, media_dir):
-    """Run the main chat loop"""
+    """运行主聊天循环"""
+    print("\nStarting chat loop...")
+    
+    if not clients:
+        print("Error: No clients available")
+        return
+        
+    if df.empty:
+        print("Error: No messages to send (DataFrame is empty)")
+        return
+        
     try:
+        # 获取目标群组
         target_group = args.target_group
-        use_topic = args.topic
-        topic_id = args.topic_id if use_topic else None
-        min_interval = args.min_interval
-        max_interval = args.max_interval
+        print(f"Connecting to target group: {target_group}")
         
-        print(f"\nDebug media_dir in run_chat_loop:")
-        print(f"media_dir: {media_dir}")
-        print(f"media_dir exists: {os.path.exists(media_dir)}")
-        print(f"media_dir is absolute: {os.path.isabs(media_dir)}")
-
-        # Create client cycle
-        client_cycle = itertools.cycle(clients)
-        
-        # Create message iterator
-        message_index = 0
-        total_messages = len(df)
-        
-        # Main loop
-        while True:
-            # Check if we've processed all messages
-            if message_index >= total_messages:
-                print("所有消息处理完成")
-                break
+        # 连接到群组
+        active_clients = []
+        for client in clients:
+            try:
+                await join_group(client, target_group)
+                print(f"Successfully joined group with client {client.session.filename}")
+                active_clients.append(client)
+            except Exception as e:
+                print(f"Error joining group with client {client.session.filename}: {str(e)}")
+                continue
                 
-            # Sleep for random interval
-            interval = random.uniform(min_interval, max_interval)
-            await asyncio.sleep(interval)
+        if not active_clients:
+            print("Error: No clients could join the target group")
+            return
             
-            # Get next client and message
-            current_client = next(client_cycle)
-            current_message = df.iloc[message_index]
-            
-            # Get recent messages for context
-            recent_messages = await get_recent_messages(
-                current_client,
-                target_group,
-                use_topic=use_topic,
-                topic_id=topic_id
-            )
-            
-            # Process message
-            await process_message(
-                current_client,
-                current_message,
-                target_group,
-                recent_messages,
-                topic_id=topic_id,
-                media_dir=media_dir  # 确保传递 media_dir
-            )
-            
-            message_index += 1
-            
+        # 反转DataFrame的顺序，从最后一条开始发送
+        df = df.iloc[::-1].reset_index(drop=True)
+        
+        print(f"\nStarting message loop with {len(active_clients)} active clients")
+        print(f"Total messages to send: {len(df)}")
+        print("Messages will be sent from newest to oldest")
+        
+        # 开始消息循环
+        message_count = 0
+        for index, row in df.iterrows():
+            try:
+                # 随机选择一个客户端
+                client = random.choice(active_clients)
+                me = await client.get_me()
+                print(f"\nProcessing message {index + 1}/{len(df)} (from newest)")
+                print(f"Using client: {me.username} ({client.session.filename})")
+                
+                # 获取最近消息用于上下文
+                try:
+                    recent_messages = await get_recent_messages(
+                        client, 
+                        target_group,
+                        use_topic=args.topic,
+                        topic_id=args.topic_id
+                    )
+                    print(f"Retrieved {len(recent_messages)} recent messages for context")
+                except Exception as e:
+                    print(f"Error getting recent messages: {str(e)}")
+                    recent_messages = []
+                
+                # 检查消息数据
+                if pd.isna(row['content']) and pd.isna(row['media']):
+                    print("Warning: Empty message data, skipping...")
+                    continue
+                    
+                # 处理并发送消息
+                try:
+                    await process_message(
+                        client,
+                        row,
+                        target_group,
+                        recent_messages,
+                        topic_id=args.topic_id if args.topic else None,
+                        media_dir=media_dir
+                    )
+                    message_count += 1
+                    print(f"Successfully sent message {message_count}")
+                except Exception as e:
+                    print(f"Error processing message: {str(e)}")
+                    # 如果是认证错误，从活动客户端列表中移除
+                    if "auth" in str(e).lower():
+                        print(f"Removing client {client.session.filename} due to auth error")
+                        active_clients.remove(client)
+                        if not active_clients:
+                            print("Error: No active clients remaining")
+                            return
+                    continue
+                
+                # 等待随机时间间隔
+                interval = random.uniform(args.min_interval, args.max_interval)
+                print(f"Waiting {interval:.1f} seconds before next message...")
+                await asyncio.sleep(interval)
+                
+            except Exception as e:
+                print(f"Error in message loop: {str(e)}")
+                continue
+        
+        print(f"\nChat loop completed. Sent {message_count} messages successfully.")
+        
     except Exception as e:
-        print(f"聊天循环出错: {str(e)}")
-        raise e
+        print(f"Fatal error in chat loop: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 async def main():
     try:
         # Parse command line arguments
         args = parse_args()
-        print(f"Starting auto chat with arguments: {args}")
-
-        # Load messages from the specified source
-        source_dir = os.path.join(args.root_dir, 'scraped_data', args.message_source)
-        messages_file = os.path.join(source_dir, f'{args.message_source}_messages.csv')
-        media_dir = os.path.join(source_dir, 'media')
-
-        print(f"Source directory: {source_dir}")
-        print(f"Messages file: {messages_file}")
-        print(f"Media directory: {media_dir}")
-
-        if not os.path.exists(messages_file):
-            print(f"Error: Messages file not found: {messages_file}")
-            return
-
-        if not os.path.exists(media_dir):
-            print(f"Warning: Media directory not found: {media_dir}")
-            return
-
-        # Load messages
-        df = pd.read_csv(messages_file)
-        # Reverse the order to process from oldest to newest
-        df = df.iloc[::-1].reset_index(drop=True)
-        print(f"Loaded {len(df)} messages")
-
-        # Initialize clients
-        clients = await init_clients()
-        if not clients:
-            print("No valid clients found")
-            return
-
-        print(f"Initialized {len(clients)} clients")
-        await run_chat_loop(clients, df, args, media_dir)
-
-    except Exception as e:
-        print(f"Error in main: {str(e)}")
-        print(f"Current working directory: {os.getcwd()}")
+        
+        print("\n=== Starting Auto Chat ===")
+        print(f"Target group: {args.target_group}")
+        print(f"Is topic group: {args.topic}")
+        print(f"Topic ID: {args.topic_id}")
+        print(f"Message interval: {args.min_interval}-{args.max_interval}")
+        print(f"Message source: {args.message_source}")
         print(f"Root directory: {args.root_dir}")
+        print(f"User email: {args.user_email}")
+        
+        # 检查消息源文件
+        message_source_path = os.path.join(
+            args.root_dir,
+            'scraped_data',
+            args.user_email,
+            args.message_source,
+            f"{args.message_source}_messages.csv"
+        )
+        print(f"\nChecking message source file: {message_source_path}")
+        
+        if not os.path.exists(message_source_path):
+            print(f"Error: Message source file not found: {message_source_path}")
+            sys.exit(1)
+            
+        try:
+            df = pd.read_csv(message_source_path)
+            print(f"Successfully loaded message source file. Found {len(df)} messages.")
+        except Exception as e:
+            print(f"Error reading message source file: {str(e)}")
+            sys.exit(1)
+        
+        # 检查会话目录
+        session_dir = os.path.join(args.root_dir, SESSIONS_DIR, args.user_email)
+        print(f"\nChecking session directory: {session_dir}")
+        
+        if not os.path.exists(session_dir):
+            print(f"Creating session directory: {session_dir}")
+            os.makedirs(session_dir, exist_ok=True)
+        
+        # 检查媒体目录
+        media_dir = os.path.join(
+            args.root_dir,
+            'scraped_data',
+            args.user_email,
+            args.message_source,
+            'media'
+        )
+        print(f"\nChecking media directory: {media_dir}")
+        
+        if not os.path.exists(media_dir):
+            print(f"Creating media directory: {media_dir}")
+            os.makedirs(media_dir, exist_ok=True)
+        
+        try:
+            # 初始化客户端
+            print("\nInitializing Telegram clients...")
+            clients = await init_clients(args.user_email)
+            
+            if not clients:
+                print("Error: No valid clients found")
+                sys.exit(1)
+                
+            print(f"Successfully initialized {len(clients)} clients")
+            
+            # 运行主循环
+            print("\nStarting chat loop...")
+            await run_chat_loop(clients, df, args, media_dir)
+            
+        except Exception as e:
+            print(f"Error in main function: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+            
+    except Exception as e:
+        print(f"Fatal error in main: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nReceived keyboard interrupt, stopping...")
+    except Exception as e:
+        print(f"Fatal error: {str(e)}")
+        import traceback
+        traceback.print_exc()

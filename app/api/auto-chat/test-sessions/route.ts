@@ -1,10 +1,22 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { verifyAuth, handleAuthError } from '@/lib/auth'
+import { PrismaClient } from '@prisma/client'
 import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 
-export async function GET(): Promise<Response> {
+const prisma = new PrismaClient()
+
+export async function POST(request: NextRequest): Promise<Response> {
   try {
+    // 验证用户身份
+    const auth = await verifyAuth(request)
+    if (!auth.success) {
+      return handleAuthError(auth.error!)
+    }
+
+    const { email } = auth.user!
+
     // Get root directory and sessions directory
     const rootDir = path.resolve(process.cwd())
     const sessionsDir = path.join(rootDir, 'sessions')
@@ -29,49 +41,58 @@ export async function GET(): Promise<Response> {
       )
     }
 
-    // Test sessions using Python script
     return new Promise<Response>((resolve) => {
-      const process = spawn('python', [scriptPath])
-      let output = ''
-      let error = ''
-
-      process.stdout.on('data', (data) => {
-        output += data.toString()
-      })
-
-      process.stderr.on('data', (data) => {
-        error += data.toString()
-      })
-
-      process.on('close', (code) => {
-        if (code !== 0) {
-          resolve(
-            NextResponse.json(
-              { success: false, message: error || 'Test failed' },
-              { status: 500 }
-            )
-          )
-          return
+      const pythonProcess = spawn('python', [scriptPath, email], {
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: 'utf-8'
         }
+      })
 
-        try {
-          const results = JSON.parse(output)
-          resolve(NextResponse.json(results))
-        } catch (e) {
-          resolve(
-            NextResponse.json(
-              { success: false, message: 'Failed to parse test results' },
+      let jsonOutput = ''
+
+      pythonProcess.stdout.on('data', (data) => {
+        jsonOutput += data.toString()
+      })
+
+      pythonProcess.stderr.on('data', (data) => {
+        console.error('Python error:', data.toString())
+      })
+
+      pythonProcess.on('close', async (code) => {
+        if (code === 0 && jsonOutput) {
+          try {
+            const results = JSON.parse(jsonOutput.trim())
+            resolve(NextResponse.json(results))
+          } catch (error: any) {
+            console.error('Failed to parse JSON:', error)
+            console.error('Raw output:', jsonOutput)
+            resolve(NextResponse.json(
+              { 
+                success: false, 
+                message: 'Failed to parse test results',
+                error: error.message
+              },
               { status: 500 }
-            )
-          )
+            ))
+          }
+        } else {
+          resolve(NextResponse.json(
+            { 
+              success: false, 
+              message: 'Test script failed or produced no output',
+              code,
+              output: jsonOutput
+            },
+            { status: 500 }
+          ))
         }
       })
     })
-
-  } catch (error: any) {
-    console.error('Test error:', error)
+  } catch (error) {
+    console.error('Error testing sessions:', error)
     return NextResponse.json(
-      { success: false, message: error.message },
+      { success: false, message: 'Internal server error' },
       { status: 500 }
     )
   }

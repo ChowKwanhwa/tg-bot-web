@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'next-app',
       script: 'npm',
-      args: 'run dev',
+      args: 'start',
       watch: false,
       autorestart: true,
       max_restarts: 10,
