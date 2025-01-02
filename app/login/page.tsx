@@ -51,10 +51,19 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-lg shadow">
+    <div className="min-h-screen flex flex-col items-center bg-gray-50 pt-16 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-3 text-sm text-gray-600 mb-6">
+        <h3 className="font-medium text-lg text-gray-900">TGB电报脚本功能：</h3>
+        <ul className="list-decimal pl-5 space-y-1.5">
+          <li>扒取指定群聊天消息，包括文本消息、图片、表情、视频等，节约写聊天脚本的时间；</li>
+          <li>多账号自动水群，有20%概率是回复别人20%概率是对别的消息的表情反应，模拟真实群聊；</li>
+          <li>使用以.session结尾的协议文件登录账号，可以在脚本中用电话号码生成协议文件，也可以直接找管理员购买协议文件 <a href="https://t.me/kowliep" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-500">https://t.me/kowliep</a>；</li>
+        </ul>
+      </div>
+      
+      <div className="max-w-md w-full space-y-6 p-8 bg-white rounded-lg shadow">
         <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+          <h2 className="text-center text-3xl font-extrabold text-gray-900">
             登录
           </h2>
           <div className="mt-4 flex justify-center space-x-4">
