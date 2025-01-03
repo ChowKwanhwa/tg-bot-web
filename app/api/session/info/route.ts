@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     // 运行 Python 脚本
     const scriptPath = path.join(process.cwd(), 'scripts', 'get_session_info.py')
     
-    return new Promise((resolve) => {
+    return new Promise<NextResponse>((resolve) => {
       const pythonProcess = spawn('python', [
         scriptPath,
         '--user-email',

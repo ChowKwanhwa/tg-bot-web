@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 运行Python脚本
-    return new Promise((resolve, reject) => {
+    return new Promise<Response>((resolve, reject) => {
       console.log(`[Update Profile] 开始更新用户 ${payload.email} 的账号信息，session: ${sessionName}`)
       console.log(`[Update Profile] 更新内容:`, {
         session_name: sessionName,
