@@ -4,7 +4,8 @@ from telethon.sessions import StringSession
 import os
 import asyncio
 import argparse
-from telethon.errors import FloodWaitError, TimeoutError, PasswordHashInvalidError
+from telethon.errors import FloodWaitError, TimeoutError, SessionPasswordNeededError
+
 from config import (
     API_ID,
     API_HASH,
@@ -18,7 +19,7 @@ async def try_connect(phone, user_email, max_attempts=3):
     sessions_dir = get_user_sessions_dir(user_email)
     os.makedirs(sessions_dir, exist_ok=True)
     
-    session_file = os.path.join(sessions_dir, f"{phone}.session")
+    session_file = os.path.join(sessions_dir, f"+{phone.replace('+', '')}.session")
     
     for attempt in range(max_attempts):
         try:
@@ -33,18 +34,15 @@ async def try_connect(phone, user_email, max_attempts=3):
             await client.connect()
             
             if not await client.is_user_authorized():
-                print(f"\nSending verification code to {phone}...")
+                print(f"\n正在发送验证码到 {phone}...")
                 await client.send_code_request(phone)
-                code = input(f"Enter the verification code sent to {phone}: ")
+                code = input(f"请输入收到的验证码 {phone}: ")
                 try:
                     await client.sign_in(phone, code)
-                except Exception as e:
-                    if "Two-steps verification" in str(e):
-                        print("\n[INFO] Two-factor authentication is enabled")
-                        password = input("Please enter your 2FA password: ")
-                        await client.sign_in(password=password)
-                    else:
-                        raise e
+                except SessionPasswordNeededError:
+                    print("检测到两步验证，请输入两步验证密码...")
+                    password = input("请输入两步验证密码: ")
+                    await client.sign_in(password=password)
             
             if await client.is_user_authorized():
                 print(f"[SUCCESS] Session file created: {session_file}")

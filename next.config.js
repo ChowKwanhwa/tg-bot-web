@@ -2,7 +2,6 @@
 const nextConfig = {
   experimental: {
     serverActions: {
-      allowedOrigins: ['localhost:3000'],
       bodySizeLimit: '100mb'
     }
   },
@@ -12,6 +11,19 @@ const nextConfig = {
       'bufferutil': 'commonjs bufferutil',
     })
     return config
+  },
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          {
+            key: 'ngrok-skip-browser-warning',
+            value: 'true',
+          },
+        ],
+      },
+    ]
   },
   eslint: {
     ignoreDuringBuilds: true,

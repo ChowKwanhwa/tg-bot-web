@@ -72,17 +72,20 @@ export default function SessionGen() {
 
       const data = await response.json()
       if (data.success) {
-        setSuccess('Session 文件生成成功！')
-        setShowVerification(false)
-        setShow2FA(false)
-        setSessionFile(data.sessionFile)
-      } else {
-        if (data.needs2FA) {
+        if (data.waitingForCode) {
+          setShowVerification(true)
+          setSuccess('验证码已发送到您的 Telegram 账号')
+        } else if (data.needs2FA) {
           setShow2FA(true)
-          setSuccess('请输入您的 Two-Factor Authentication 密码')
+          setSuccess('请输入您的两步验证密码')
         } else {
-          setError(data.message || '验证失败')
+          setSuccess('Session 文件生成成功！')
+          setShowVerification(false)
+          setShow2FA(false)
+          setSessionFile(data.sessionFile)
         }
+      } else {
+        setError(data.message || '验证失败')
       }
     } catch (err: any) {
       setError(err.message || '发生错误')
@@ -131,9 +134,23 @@ export default function SessionGen() {
   return (
     <div className="py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-md mx-auto bg-white rounded-lg shadow-md p-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-8 text-center">
-          生成 Telegram Session
-        </h2>
+        <div className="mb-8 text-center">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">
+            生成 Telegram Session
+          </h2>
+          <p className="text-gray-600">
+            自己生成session文件可能会报错，建议直接找{' '}
+            <a 
+              href="https://t.me/kowliep" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-blue-600 hover:text-blue-800 underline"
+            >
+              管理员
+            </a>
+            {' '}购买带session文件的电报号，15元一个
+          </p>
+        </div>
 
         {error && (
           <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
@@ -220,19 +237,19 @@ export default function SessionGen() {
             {show2FA && (
               <div className="mb-6">
                 <label htmlFor="password2FA" className="block text-sm font-medium text-gray-700 mb-2">
-                  2FA 密码
+                  两步验证密码
                 </label>
                 <input
                   type="password"
                   id="password2FA"
                   value={password2FA}
                   onChange={(e) => setPassword2FA(e.target.value)}
-                  placeholder="输入 2FA 密码"
+                  placeholder="输入两步验证密码"
                   className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
                 />
                 <p className="mt-2 text-sm text-gray-500">
-                  请输入您的 Two-Factor Authentication 密码
+                  请输入您的两步验证密码
                 </p>
               </div>
             )}

@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
       })
         .setProtectedHeader({ alg: 'HS256' })
         .setIssuedAt()
-        .setExpirationTime('24h')
+        .setExpirationTime('365d')
         .sign(JWT_SECRET)
 
       const response = NextResponse.json({ 
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
 
     if (!user) {
       return NextResponse.json(
-        { success: false, message: 'Invalid credentials' },
+        { success: false, message: '没有此用户，请联系https://t.me/kowliep购买' },
         { status: 401 }
       )
     }
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
     const validPassword = await bcrypt.compare(password, user.password)
     if (!validPassword) {
       return NextResponse.json(
-        { success: false, message: 'Invalid credentials' },
+        { success: false, message: '密码错误' },
         { status: 401 }
       )
     }
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
         where: { email }
       })
       return NextResponse.json(
-        { success: false, message: 'Account expired' },
+        { success: false, message: '账户超过有效期，请重新购买' },
         { status: 401 }
       )
     }
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuedAt()
-      .setExpirationTime('24h')
+      .setExpirationTime('5d')
       .sign(JWT_SECRET)
 
     const response = NextResponse.json({ 

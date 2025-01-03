@@ -22,7 +22,7 @@ export async function POST(req: Request): Promise<Response> {
 
     // 解析JWT获取用户邮箱
     const { payload } = await jose.jwtVerify(token.value, JWT_SECRET)
-    const userEmail = payload.username as string
+    const userEmail = payload.email as string
 
     if (!userEmail) {
       return NextResponse.json(
@@ -32,6 +32,8 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     const { phoneNumber, verificationCode, password2FA } = await req.json()
+    console.log('Verify request:', { phoneNumber, hasCode: !!verificationCode, has2FA: !!password2FA })
+    console.log('Pending sessions:', Object.keys(pendingSessions))
 
     if (!phoneNumber || !verificationCode) {
       return NextResponse.json(
@@ -42,12 +44,15 @@ export async function POST(req: Request): Promise<Response> {
 
     const session = pendingSessions[phoneNumber]
     if (!session) {
+      console.log('Session not found for phone number:', phoneNumber)
       return NextResponse.json(
         { success: false, message: 'Session not found' },
         { status: 404 }
       )
     }
 
+    console.log('Session user email:', session.userEmail)
+    console.log('Current user email:', userEmail)
     // 验证用户身份匹配
     if (session.userEmail !== userEmail) {
       return NextResponse.json(
@@ -74,7 +79,9 @@ export async function POST(req: Request): Promise<Response> {
           sessionCreated = true
         }
         
-        if (text.includes('[INFO] Two-factor authentication is enabled')) {
+        // Check for 2FA prompt in both English and Chinese
+        if (text.includes('Two-factor authentication') || 
+            text.includes('检测到两步验证')) {
           needs2FA = true
           if (password2FA) {
             console.log('Writing 2FA password to Python process...')
@@ -83,7 +90,7 @@ export async function POST(req: Request): Promise<Response> {
             resolve(NextResponse.json({ 
               success: false, 
               needs2FA: true,
-              message: '2FA password required'
+              message: '需要两步验证密码'
             }))
             return
           }

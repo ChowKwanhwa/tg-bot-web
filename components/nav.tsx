@@ -8,6 +8,7 @@ const navItems = [
   { name: '生成Session文件', href: '/session-gen' },
   { name: '扒取群聊天', href: '/chat-scraper' },
   { name: '自动水群', href: '/auto-chat' },
+  { name: '账号信息', href: '/session-info' },
   { name: '官方群', href: 'https://t.me/TGBdianbao', external: true },
 ]
 

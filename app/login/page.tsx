@@ -36,12 +36,7 @@ function LoginForm() {
       }
 
       // 登录成功，重定向到之前的页面或默认页面
-      const from = searchParams.get('from')
-      if (from) {
-        window.location.replace(from)
-      } else {
-        window.location.replace(loginType === 'admin' ? '/admin' : '/')
-      }
+      window.location.replace(loginType === 'admin' ? '/admin' : '/session-gen')
 
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Login failed')

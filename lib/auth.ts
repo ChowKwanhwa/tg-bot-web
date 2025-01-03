@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
-import * as jose from 'jose'
+import { jwtVerify, JWTPayload } from 'jose'
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
@@ -18,6 +18,40 @@ export interface AuthResult {
   }
 }
 
+export interface JwtPayload extends JWTPayload {
+  email: string
+  isAdmin: boolean
+  expiresAt: string
+}
+
+export async function getJwtPayload(request: NextRequest): Promise<JwtPayload | null> {
+  try {
+    const cookieStore = await request.cookies
+    const token = cookieStore.get('auth-token')?.value
+
+    if (!token) {
+      return null
+    }
+
+    const { payload } = await jwtVerify(token, JWT_SECRET)
+    
+    // 验证必要的字段是否存在
+    if (
+      typeof payload.email !== 'string' ||
+      typeof payload.isAdmin !== 'boolean' ||
+      typeof payload.expiresAt !== 'string'
+    ) {
+      console.error('Invalid token payload:', payload)
+      return null
+    }
+
+    return payload as JwtPayload
+  } catch (error) {
+    console.error('Error verifying JWT:', error)
+    return null
+  }
+}
+
 export async function verifyAuth(request: NextRequest, requireAdmin = false): Promise<AuthResult> {
   try {
     // 获取 cookie
@@ -32,7 +66,7 @@ export async function verifyAuth(request: NextRequest, requireAdmin = false): Pr
     }
 
     // 验证 token
-    const { payload } = await jose.jwtVerify(token.value, JWT_SECRET)
+    const { payload } = await jwtVerify(token.value, JWT_SECRET)
     const email = payload.email as string
     const isAdmin = payload.isAdmin as boolean
 

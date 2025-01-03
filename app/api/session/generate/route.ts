@@ -24,7 +24,7 @@ export async function POST(req: Request): Promise<Response> {
 
     // 解析JWT获取用户邮箱
     const { payload } = await jose.jwtVerify(token.value, JWT_SECRET)
-    const userEmail = payload.username as string
+    const userEmail = payload.email as string
 
     if (!userEmail) {
       return NextResponse.json(
@@ -57,7 +57,8 @@ export async function POST(req: Request): Promise<Response> {
     const pythonProcess = spawn('python', [
       scriptPath,
       phoneNumber,
-      '--output-dir', userSessionsDir
+      '--output-dir', userSessionsDir,
+      '--user-email', userEmail
     ])
 
     return new Promise<Response>((resolve) => {
@@ -66,7 +67,7 @@ export async function POST(req: Request): Promise<Response> {
       let codeRequestSent = false
       let timeout: NodeJS.Timeout
 
-      // Set a timeout of 30 seconds
+      // Set a timeout of 60 seconds
       timeout = setTimeout(() => {
         console.log('Request timed out')
         pythonProcess.kill()
@@ -74,28 +75,33 @@ export async function POST(req: Request): Promise<Response> {
           { success: false, message: 'Request timed out' },
           { status: 504 }
         ))
-      }, 30000)
+      }, 60000)
 
       pythonProcess.stdout.on('data', (data) => {
         const text = data.toString()
         console.log('Python stdout:', text)
         output += text
         
-        // Check if verification code is requested
-        if (text.includes('Enter the verification code') && !codeRequestSent) {
+        // Check if verification code is requested (both English and Chinese)
+        if ((text.includes('Enter the verification code') || 
+             text.includes('请输入收到的验证码')) && 
+            !codeRequestSent) {
           codeRequestSent = true
           clearTimeout(timeout)
           
           // Store session info with user email
+          console.log('Storing session for phone:', phoneNumber)
           pendingSessions[phoneNumber] = {
             process: pythonProcess,
             userEmail: userEmail,
             outputDir: userSessionsDir
           }
+          console.log('Current pending sessions:', Object.keys(pendingSessions))
           
           resolve(NextResponse.json({
             success: true,
-            message: 'Verification code requested'
+            waitingForCode: true,
+            message: '验证码已发送到您的 Telegram 账号'
           }))
         }
       })
