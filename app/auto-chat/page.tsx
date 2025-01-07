@@ -42,6 +42,7 @@ export default function AutoChat() {
   const [messageSources, setMessageSources] = useState<MessageSource[]>([])
   const [selectedSource, setSelectedSource] = useState<string>('')
   const [messageSourcesError, setMessageSourcesError] = useState<string | null>(null)
+  const [enableLoop, setEnableLoop] = useState(false)  // 添加循环模式状态
   const statusRef = useRef<HTMLDivElement>(null)
 
   // 获取消息源列表
@@ -168,98 +169,89 @@ export default function AutoChat() {
   }
 
   const handleStartAutoChat = async () => {
-    try {
-      setIsRunning(true);
-      setStatus([]);
+    if (!targetGroup || !selectedSource) {
+      setAutoChatStatus('Please fill in all required fields')
+      return
+    }
 
+    setAutoChatting(true)
+    setAutoChatStatus(null)
+    setStatus([])
+    setIsRunning(true)
+
+    try {
       const response = await fetch('/api/auto-chat/start', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           targetGroup,
+          messageSource: selectedSource,
           isTopic,
           topicId: isTopic ? topicId : undefined,
-          messageSource: selectedSource,
           messageInterval,
-        }),
-      });
+          enableLoop
+        })
+      })
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Auto chat error:', errorData);
-        
-        // 显示详细的错误信息
-        const errorMessages = [
-          `❌ Error: ${errorData.message}`,
-          ...(errorData.error ? [`Details: ${errorData.error}`] : []),
-          ...(errorData.stdout ? [`Output: ${errorData.stdout}`] : []),
-          ...(errorData.stderr ? [`Error output: ${errorData.stderr}`] : []),
-        ];
-        
-        setStatus(prev => [...prev, ...errorMessages]);
-        setIsRunning(false);
-        throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+      const data = await response.json()
+      
+      if (!data.success) {
+        throw new Error(data.message || 'Failed to start auto chat')
       }
 
-      if (!response.body) {
-        throw new Error('No response body');
+      // 更新状态
+      if (data.data) {
+        setStatus(prev => [...prev, data.data])
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      // 如果需要持续监控进程状态，可以设置一个轮询
+      if (data.processId) {
+        const pollStatus = async () => {
+          try {
+            const statusResponse = await fetch('/api/auto-chat/status', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ processId: data.processId })
+            })
 
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            console.log('Stream complete');
-            break;
-          }
-
-          const text = decoder.decode(value);
-          const lines = text.split('\n');
-
-          for (const line of lines) {
-            if (line.trim().startsWith('data: ')) {
-              try {
-                const jsonStr = line.trim().replace('data: ', '');
-                const data = JSON.parse(jsonStr);
-                
-                if (data.type === 'error') {
-                  console.error('Received error:', data.message);
-                  setIsRunning(false);
-                  setStatus(prev => [...prev, `❌ ${data.message}`]);
-                } else if (data.type === 'status') {
-                  console.log('Received status:', data.message);
-                  setStatus(prev => [...prev, data.message]);
-                }
-
-                // 自动滚动到底部
-                if (statusRef.current) {
-                  statusRef.current.scrollTop = statusRef.current.scrollHeight;
-                }
-              } catch (e) {
-                console.error('Error parsing SSE message:', e);
-                setStatus(prev => [...prev, `Error parsing message: ${e}`]);
-              }
+            const statusData = await statusResponse.json()
+            
+            if (statusData.output) {
+              setStatus(prev => [...prev, statusData.output])
             }
+
+            if (statusData.error) {
+              setStatus(prev => [...prev, `❌ ${statusData.error}`])
+              setIsRunning(false)
+              return
+            }
+
+            // 如果进程仍在运行，继续轮询
+            if (statusData.running) {
+              setTimeout(pollStatus, 2000) // 每2秒轮询一次
+            } else {
+              setIsRunning(false)
+              setStatus(prev => [...prev, '✓ Auto chat process completed'])
+            }
+          } catch (error) {
+            console.error('Error polling status:', error)
+            setStatus(prev => [...prev, `❌ Error checking status: ${error}`])
+            setIsRunning(false)
           }
         }
-      } catch (e) {
-        console.error('Error reading stream:', e);
-        setStatus(prev => [...prev, `Error reading stream: ${e}`]);
-        setIsRunning(false);
-      } finally {
-        reader.releaseLock();
+
+        // 开始轮询
+        setTimeout(pollStatus, 1000)
       }
+
     } catch (error) {
-      console.error('Error in auto chat:', error);
-      setIsRunning(false);
-      if (!status.some(s => s.startsWith('❌'))) {
-        setStatus(prev => [...prev, `❌ Error: ${error}`]);
-      }
+      console.error('Error starting auto chat:', error)
+      setStatus(prev => [...prev, `❌ ${error instanceof Error ? error.message : 'Unknown error'}`])
+      setIsRunning(false)
     }
   };
 
@@ -668,6 +660,20 @@ export default function AutoChat() {
               </p>
             </div>
 
+            {/* Loop Mode Toggle */}
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="enableLoop"
+                checked={enableLoop}
+                onChange={(e) => setEnableLoop(e.target.checked)}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="enableLoop" className="text-sm font-medium text-gray-700">
+                启用循环模式（持续发送消息）
+              </label>
+            </div>
+
             {/* Start Button */}
             <div className="flex gap-4 mb-4">
               <button
@@ -731,7 +737,7 @@ export default function AutoChat() {
                       <li>
                         <strong>消息源选择：</strong>
                         <span className="text-gray-600 dark:text-gray-400">
-                          从下拉菜单中选择要使用的消息源。如果没有合适的消息源，可以去"扒取群聊天"自动扒取指定群的聊天消息，也可以使用上方的"Upload Message Source"功能上传；
+                          从下拉菜单中选择要使用的消息源。如果没有合适的消息源，可以去"扒取群聊天"自动扒取指定群的聊天消息，也可以使用上方的"上传消息源"功能上传；
                         </span>
                       </li>
                       <li>

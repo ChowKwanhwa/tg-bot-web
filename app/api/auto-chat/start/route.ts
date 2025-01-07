@@ -60,6 +60,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         args.push('--topic-id', data.topicId);
       }
 
+      // 添加循环模式参数
+      if (data.enableLoop) {
+        args.push('--enable-loop');
+      }
+
       console.log("\nCommand arguments:", args);
 
       // 创建进程

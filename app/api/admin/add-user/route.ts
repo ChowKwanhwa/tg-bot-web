@@ -30,7 +30,9 @@ export async function POST(request: NextRequest) {
     // 计算过期时间
     let expiresAtDate: Date | null = null
     if (expiresAt) {
-      expiresAtDate = new Date(expiresAt)
+      const date = new Date(expiresAt)
+      // 如果年份是9999，则表示永不过期
+      expiresAtDate = date.getFullYear() === 9999 ? null : date
     }
 
     // 创建用户
@@ -52,7 +54,8 @@ export async function POST(request: NextRequest) {
     }, { status: 201 })
 
   } catch (error: any) {
-    console.error('Error adding user:', error)
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+    console.error('Error adding user:', errorMessage)
     // 处理唯一约束冲突
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       return NextResponse.json(
@@ -60,8 +63,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+    
     return NextResponse.json(
-      { success: false, message: error.message || '添加用户失败' },
+      { success: false, message: errorMessage },
       { status: 500 }
     )
   } finally {

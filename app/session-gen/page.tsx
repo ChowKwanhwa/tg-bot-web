@@ -148,7 +148,7 @@ export default function SessionGen() {
             >
               管理员
             </a>
-            {' '}购买带session文件的电报号，15元一个
+            {' '}购买带session文件的电报号，18元一个
           </p>
         </div>
 

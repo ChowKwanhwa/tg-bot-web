@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 export default function AdminPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [expireTime, setExpireTime] = useState('1') // 默认1周
+  const [expireTime, setExpireTime] = useState('7') // 默认1周
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
@@ -21,7 +21,13 @@ export default function AdminPage() {
     try {
       // 计算过期时间
       const expiresAt = new Date()
-      expiresAt.setDate(expiresAt.getDate() + parseInt(expireTime) * 7) // 转换周为天数
+      const days = parseInt(expireTime)
+      if (days > 0) {
+        expiresAt.setDate(expiresAt.getDate() + days)
+      } else {
+        // 如果days为0，则设置为null表示永不过期
+        expiresAt.setFullYear(9999)
+      }
       console.log('Sending expiresAt:', expiresAt.toISOString()) // 添加日志
 
       const res = await fetch('/api/admin/add-user', {
@@ -105,11 +111,14 @@ export default function AdminPage() {
                 value={expireTime}
                 onChange={(e) => setExpireTime(e.target.value)}
               >
-                <option value="1">1周</option>
-                <option value="2">2周</option>
-                <option value="4">1个月</option>
-                <option value="12">3个月</option>
-                <option value="0">永不过期</option>
+                <option value="1">1天</option>
+                <option value="3">3天</option>
+                <option value="7">1周</option>
+                <option value="14">2周</option>
+                <option value="30">1个月</option>
+                <option value="60">2个月</option>
+                <option value="90">3个月</option>
+                <option value="0">xxxx</option>
               </select>
             </div>
           </div>

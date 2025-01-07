@@ -71,6 +71,7 @@ def parse_args():
     parser.add_argument('--message-source', required=True, help='Name of the message source folder')
     parser.add_argument('--root-dir', required=True, help='Root directory of the project')
     parser.add_argument('--user-email', required=True, help='User email for session directory')
+    parser.add_argument('--enable-loop', action='store_true', help='Enable continuous message loop')
     return parser.parse_args()
 
 async def try_connect_with_proxy(session_file, proxy_config, user_email):
@@ -443,74 +444,85 @@ async def run_chat_loop(clients, df, args, media_dir):
             print("Error: No clients could join the target group")
             return
             
-        # 反转DataFrame的顺序，从最后一条开始发送
-        df = df.iloc[::-1].reset_index(drop=True)
-        
-        print(f"\nStarting message loop with {len(active_clients)} active clients")
-        print(f"Total messages to send: {len(df)}")
-        print("Messages will be sent from newest to oldest")
-        
-        # 开始消息循环
-        message_count = 0
-        for index, row in df.iterrows():
-            try:
-                # 随机选择一个客户端
-                client = random.choice(active_clients)
-                me = await client.get_me()
-                print(f"\nProcessing message {index + 1}/{len(df)} (from newest)")
-                print(f"Using client: {me.username} ({client.session.filename})")
-                
-                # 获取最近消息用于上下文
+        while True:  # 添加外部循环
+            print("\n=== Starting new message cycle ===")
+            # 反转DataFrame的顺序，从最后一条开始发送
+            df_current = df.iloc[::-1].reset_index(drop=True)
+            
+            print(f"\nStarting message loop with {len(active_clients)} active clients")
+            print(f"Total messages to send: {len(df_current)}")
+            print("Messages will be sent from newest to oldest")
+            
+            # 开始消息循环
+            message_count = 0
+            for index, row in df_current.iterrows():
                 try:
-                    recent_messages = await get_recent_messages(
-                        client, 
-                        target_group,
-                        use_topic=args.topic,
-                        topic_id=args.topic_id
-                    )
-                    print(f"Retrieved {len(recent_messages)} recent messages for context")
-                except Exception as e:
-                    print(f"Error getting recent messages: {str(e)}")
-                    recent_messages = []
-                
-                # 检查消息数据
-                if pd.isna(row['content']) and pd.isna(row['media']):
-                    print("Warning: Empty message data, skipping...")
-                    continue
+                    # 随机选择一个客户端
+                    client = random.choice(active_clients)
+                    me = await client.get_me()
+                    print(f"\nProcessing message {index + 1}/{len(df_current)} (from newest)")
+                    print(f"Using client: {me.username} ({client.session.filename})")
                     
-                # 处理并发送消息
-                try:
-                    await process_message(
-                        client,
-                        row,
-                        target_group,
-                        recent_messages,
-                        topic_id=args.topic_id if args.topic else None,
-                        media_dir=media_dir
-                    )
-                    message_count += 1
-                    print(f"Successfully sent message {message_count}")
+                    # 获取最近消息用于上下文
+                    try:
+                        recent_messages = await get_recent_messages(
+                            client, 
+                            target_group,
+                            use_topic=args.topic,
+                            topic_id=args.topic_id
+                        )
+                        print(f"Retrieved {len(recent_messages)} recent messages for context")
+                    except Exception as e:
+                        print(f"Error getting recent messages: {str(e)}")
+                        recent_messages = []
+                    
+                    # 检查消息数据
+                    if pd.isna(row['content']) and pd.isna(row['media']):
+                        print("Warning: Empty message data, skipping...")
+                        continue
+                        
+                    # 处理并发送消息
+                    try:
+                        await process_message(
+                            client,
+                            row,
+                            target_group,
+                            recent_messages,
+                            topic_id=args.topic_id if args.topic else None,
+                            media_dir=media_dir
+                        )
+                        message_count += 1
+                        print(f"Successfully sent message {message_count}")
+                    except Exception as e:
+                        print(f"Error processing message: {str(e)}")
+                        # 如果是认证错误，从活动客户端列表中移除
+                        if "auth" in str(e).lower():
+                            print(f"Removing client {client.session.filename} due to auth error")
+                            active_clients.remove(client)
+                            if not active_clients:
+                                print("Error: No active clients remaining")
+                                return
+                        continue
+                    
+                    # 等待随机时间间隔
+                    interval = random.uniform(args.min_interval, args.max_interval)
+                    print(f"Waiting {interval:.1f} seconds before next message...")
+                    await asyncio.sleep(interval)
+                    
                 except Exception as e:
-                    print(f"Error processing message: {str(e)}")
-                    # 如果是认证错误，从活动客户端列表中移除
-                    if "auth" in str(e).lower():
-                        print(f"Removing client {client.session.filename} due to auth error")
-                        active_clients.remove(client)
-                        if not active_clients:
-                            print("Error: No active clients remaining")
-                            return
+                    print(f"Error in message loop: {str(e)}")
                     continue
+            
+            print(f"\nMessage cycle completed. Sent {message_count} messages successfully.")
+            
+            # 检查是否启用了循环
+            if not args.enable_loop:
+                print("Loop mode not enabled, exiting...")
+                break
                 
-                # 等待随机时间间隔
-                interval = random.uniform(args.min_interval, args.max_interval)
-                print(f"Waiting {interval:.1f} seconds before next message...")
-                await asyncio.sleep(interval)
-                
-            except Exception as e:
-                print(f"Error in message loop: {str(e)}")
-                continue
-        
-        print(f"\nChat loop completed. Sent {message_count} messages successfully.")
+            print("\nLoop mode enabled, waiting before starting next cycle...")
+            # 在循环之间添加额外的延迟
+            await asyncio.sleep(random.uniform(args.min_interval * 2, args.max_interval * 2))
         
     except Exception as e:
         print(f"Fatal error in chat loop: {str(e)}")
@@ -530,6 +542,7 @@ async def main():
         print(f"Message source: {args.message_source}")
         print(f"Root directory: {args.root_dir}")
         print(f"User email: {args.user_email}")
+        print(f"Loop mode: {args.enable_loop}")
         
         # 检查消息源文件
         message_source_path = os.path.join(
