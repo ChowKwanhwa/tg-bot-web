@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, Suspense } from 'react'
+import { useState, Suspense, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 function LoginForm() {
@@ -11,6 +11,16 @@ function LoginForm() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const searchParams = useSearchParams()
+
+  // 检查URL中的错误参数
+  useEffect(() => {
+    const errorType = searchParams.get('error')
+    if (errorType === 'expired') {
+      setError('您的账户已过期，请联系管理员续费')
+    } else if (errorType === 'session_expired') {
+      setError('登录会话已过期，请重新登录')
+    }
+  }, [searchParams])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

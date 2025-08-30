@@ -20,30 +20,72 @@ export default function AdminPage() {
 
     try {
       // 计算过期时间
+      const now = new Date()
+      console.log('1. Current time:', {
+        now: now.toISOString()
+      })
+
+      // 创建过期时间
       const expiresAt = new Date()
-      const days = parseInt(expireTime)
-      if (days > 0) {
-        expiresAt.setDate(expiresAt.getDate() + days)
+      
+      // 根据选择添加时间
+      const hours = expireTime === '0.125' ? 3 : 
+                   expireTime === '0.208' ? 5 :
+                   expireTime === '1' ? 24 :
+                   expireTime === '3' ? 72 :
+                   expireTime === '7' ? 168 :
+                   expireTime === '14' ? 336 :
+                   expireTime === '30' ? 720 :
+                   expireTime === '60' ? 1440 :
+                   expireTime === '90' ? 2160 : 0
+
+      console.log('2. Adding hours:', {
+        selectedOption: expireTime,
+        hours
+      })
+
+      if (hours > 0) {
+        // 直接设置小时
+        expiresAt.setHours(expiresAt.getHours() + hours)
+        console.log('3. After adding hours:', {
+          now: now.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          diffHours: (expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60)
+        })
       } else {
-        // 如果days为0，则设置为null表示永不过期
         expiresAt.setFullYear(9999)
+        console.log('3. Set to forever:', {
+          expiresAt: expiresAt.toISOString()
+        })
       }
-      console.log('Sending expiresAt:', expiresAt.toISOString()) // 添加日志
+
+      // 准备请求数据
+      const requestData = {
+        email,
+        password,
+        expiresAt: expiresAt.toISOString()
+      }
+
+      console.log('4. Sending request:', {
+        currentTime: new Date().toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        diffHours: (expiresAt.getTime() - new Date().getTime()) / (1000 * 60 * 60)
+      })
 
       const res = await fetch('/api/admin/add-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          email,
-          password,
-          expiresAt: expiresAt.toISOString() // 确保发送 ISO 格式的字符串
-        })
+        body: JSON.stringify(requestData)
       })
 
       const data = await res.json()
-      console.log('Response:', data) // 添加日志
+      console.log('5. Response:', {
+        status: res.status,
+        data,
+        currentTime: new Date().toISOString()
+      })
 
       if (!res.ok) {
         throw new Error(data.message || '添加用户失败')
@@ -111,6 +153,8 @@ export default function AdminPage() {
                 value={expireTime}
                 onChange={(e) => setExpireTime(e.target.value)}
               >
+                <option value="0.125">3小时</option>
+                <option value="0.208">5小时</option>
                 <option value="1">1天</option>
                 <option value="3">3天</option>
                 <option value="7">1周</option>
@@ -118,7 +162,7 @@ export default function AdminPage() {
                 <option value="30">1个月</option>
                 <option value="60">2个月</option>
                 <option value="90">3个月</option>
-                <option value="0">xxxx</option>
+                <option value="0">永久</option>
               </select>
             </div>
           </div>

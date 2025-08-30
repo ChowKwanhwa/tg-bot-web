@@ -15,6 +15,11 @@ export async function POST(request: NextRequest) {
 
     // 解析请求数据
     const { email, password, expiresAt } = await request.json()
+    console.log('1. Received request:', {
+      email,
+      expiresAt,
+      currentTime: new Date().toISOString()
+    })
 
     // 验证必需字段
     if (!email || !password) {
@@ -30,9 +35,37 @@ export async function POST(request: NextRequest) {
     // 计算过期时间
     let expiresAtDate: Date | null = null
     if (expiresAt) {
+      console.log('2. Processing expiration:', {
+        receivedExpiresAt: expiresAt,
+        currentTime: new Date().toISOString()
+      })
+
       const date = new Date(expiresAt)
       // 如果年份是9999，则表示永不过期
-      expiresAtDate = date.getFullYear() === 9999 ? null : date
+      if (date.getFullYear() === 9999) {
+        expiresAtDate = null
+        console.log('3. Set to never expire')
+      } else {
+        // 验证日期是否有效
+        if (isNaN(date.getTime())) {
+          console.log('3. Invalid date')
+          return NextResponse.json(
+            { success: false, message: '无效的过期时间' },
+            { status: 400 }
+          )
+        }
+        
+        // 确保过期时间在当前时间之后
+        const now = new Date()
+        console.log('3. Time comparison:', {
+          expiresAt: date.toISOString(),
+          now: now.toISOString(),
+          diffHours: (date.getTime() - now.getTime()) / (1000 * 60 * 60)
+        })
+
+        // 创建用户
+        expiresAtDate = date
+      }
     }
 
     // 创建用户
@@ -43,6 +76,12 @@ export async function POST(request: NextRequest) {
         isAdmin: false,
         expiresAt: expiresAtDate
       }
+    })
+
+    console.log('4. User created:', {
+      email: user.email,
+      expiresAt: user.expiresAt,
+      currentTime: new Date().toISOString()
     })
 
     return NextResponse.json({

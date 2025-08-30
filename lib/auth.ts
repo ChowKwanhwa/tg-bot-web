@@ -69,11 +69,20 @@ export async function verifyAuth(request: NextRequest, requireAdmin = false): Pr
     const { payload } = await jwtVerify(token.value, JWT_SECRET)
     const email = payload.email as string
     const isAdmin = payload.isAdmin as boolean
+    const tokenExpiresAt = payload.expiresAt as string
 
     if (!email) {
       return {
         success: false,
         error: 'Invalid token'
+      }
+    }
+
+    // 检查 JWT payload 中的过期时间
+    if (tokenExpiresAt && new Date(tokenExpiresAt) < new Date()) {
+      return {
+        success: false,
+        error: 'Token expired'
       }
     }
 
@@ -100,12 +109,20 @@ export async function verifyAuth(request: NextRequest, requireAdmin = false): Pr
       }
     }
 
-    // 检查用户是否过期
+    // 检查用户是否过期（数据库中的过期时间）
     if (user.expiresAt && new Date(user.expiresAt) < new Date()) {
+      // 删除过期用户的 token
+      const response = NextResponse.json({
+        success: false,
+        error: 'User expired'
+      })
+      response.cookies.delete('auth-token')
+      
       // 删除过期用户
       await prisma.user.delete({
         where: { email }
       })
+      
       return {
         success: false,
         error: 'User expired'

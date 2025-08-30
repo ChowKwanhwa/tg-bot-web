@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuedAt()
-      .setExpirationTime('5d')
+      .setExpirationTime(user.expiresAt ? Math.floor(user.expiresAt.getTime() / 1000) : '5d')
       .sign(JWT_SECRET)
 
     const response = NextResponse.json({ 

@@ -52,11 +52,22 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL('/', request.url))
     }
 
-    // 检查是否过期
+    // 检查用户是否过期
     const expiresAt = payload.expiresAt as string | undefined
-    if (expiresAt && new Date(expiresAt) < new Date()) {
-      console.log('Middleware: Token expired')
-      const response = NextResponse.redirect(new URL('/login', request.url))
+    const now = new Date()
+    
+    // 检查用户的过期时间
+    if (expiresAt && new Date(expiresAt) < now) {
+      console.log('Middleware: User account expired')
+      const response = NextResponse.redirect(new URL('/login?error=expired', request.url))
+      response.cookies.delete('auth-token')
+      return response
+    }
+
+    // 检查 JWT token 的过期时间
+    if (payload.exp && payload.exp * 1000 < now.getTime()) {
+      console.log('Middleware: JWT token expired')
+      const response = NextResponse.redirect(new URL('/login?error=session_expired', request.url))
       response.cookies.delete('auth-token')
       return response
     }
